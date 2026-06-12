@@ -191,14 +191,14 @@ if [ "$INTERACTIVE" = "true" ]; then
         CODEX_SERVICE_RUNNING=true
     fi
 
-    local claude_status="${RED}inaktiv${NC}"
+    claude_status="${RED}inaktiv${NC}"
     if [ "$CLAUDE_SERVICE_RUNNING" = "true" ]; then
         claude_status="${BGREEN}aktiv (läuft)${NC}"
     elif [ "$RUN_CLAUDE" = "true" ]; then
         claude_status="${BYELLOW}inaktiv (aktiviert in Konfig)${NC}"
     fi
 
-    local codex_status="${RED}inaktiv${NC}"
+    codex_status="${RED}inaktiv${NC}"
     if [ "$CODEX_SERVICE_RUNNING" = "true" ]; then
         codex_status="${BGREEN}aktiv (läuft)${NC}"
     elif [ "$RUN_CODEX" = "true" ]; then
