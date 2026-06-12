@@ -151,7 +151,7 @@ RUN_CLAUDE="${RUN_CLAUDE:-true}"
 RUN_CODEX="${RUN_CODEX:-false}"
 CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
 CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
-WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/claude-workspace}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/ai-workspace}"
 CODEX_AUTH_TYPE="${CODEX_AUTH_TYPE:-subscription}"
 
 # Helper to find executable in PATH, otherwise use the configured path

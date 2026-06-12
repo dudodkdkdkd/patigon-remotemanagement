@@ -95,7 +95,7 @@ Die Datei wird unter `/etc/claude-remote/config.env` (Produktion) oder im Projek
 |---|---|---|
 | `RUN_CLAUDE` | `true`/`false` - Aktiviert den Claude Code Remote-Control Dienst. | `true` |
 | `RUN_CODEX` | `true`/`false` - Aktiviert den Codex Remote-Control Dienst. | `false` |
-| `WORKSPACE_DIR` | Das Verzeichnis, aus dem die Remote-Sitzung gestartet wird. | `/opt/claude-workspace` |
+| `WORKSPACE_DIR` | Das Verzeichnis, aus dem die Remote-Sitzung gestartet wird. | `/opt/ai-workspace` |
 | `CLAUDE_PATH` | Pfad zur Claude CLI (VPS-Standard). | `/root/.local/bin/claude` |
 | `CODEX_PATH` | Pfad zur Codex CLI (VPS-Standard). | `/usr/local/bin/codex` |
 | `CODEX_AUTH_TYPE` | Authentifizierung für Codex: `subscription` (Abo) oder `api_key`. | `subscription` |
