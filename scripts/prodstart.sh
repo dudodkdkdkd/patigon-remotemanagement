@@ -181,11 +181,35 @@ fi
 if [ "$INTERACTIVE" = "true" ]; then
     print_header "Claude Code & Codex Configuration Wizard"
     
+    # Check actual systemd service status
+    CLAUDE_SERVICE_RUNNING=false
+    if systemctl is-active --quiet claude-remote 2>/dev/null; then
+        CLAUDE_SERVICE_RUNNING=true
+    fi
+    CODEX_SERVICE_RUNNING=false
+    if systemctl is-active --quiet codex-remote 2>/dev/null; then
+        CODEX_SERVICE_RUNNING=true
+    fi
+
+    local claude_status="${RED}inaktiv${NC}"
+    if [ "$CLAUDE_SERVICE_RUNNING" = "true" ]; then
+        claude_status="${BGREEN}aktiv (läuft)${NC}"
+    elif [ "$RUN_CLAUDE" = "true" ]; then
+        claude_status="${BYELLOW}inaktiv (aktiviert in Konfig)${NC}"
+    fi
+
+    local codex_status="${RED}inaktiv${NC}"
+    if [ "$CODEX_SERVICE_RUNNING" = "true" ]; then
+        codex_status="${BGREEN}aktiv (läuft)${NC}"
+    elif [ "$RUN_CODEX" = "true" ]; then
+        codex_status="${BYELLOW}inaktiv (aktiviert in Konfig)${NC}"
+    fi
+
     print_step "1" "Dienste auswählen"
     echo -e "Welche Remote-Control Dienste möchtest du konfigurieren und aktivieren?"
     echo ""
-    echo -e "  ${BCYAN}[1]${NC} Claude Code    (Aktuell: $([ "$RUN_CLAUDE" = "true" ] && echo -e "${BGREEN}aktiv${NC}" || echo -e "${RED}inaktiv${NC}"))"
-    echo -e "  ${BCYAN}[2]${NC} OpenAI Codex  (Aktuell: $([ "$RUN_CODEX" = "true" ] && echo -e "${BGREEN}aktiv${NC}" || echo -e "${RED}inaktiv${NC}"))"
+    echo -e "  ${BCYAN}[1]${NC} Claude Code    (Aktuell: ${claude_status})"
+    echo -e "  ${BCYAN}[2]${NC} OpenAI Codex  (Aktuell: ${codex_status})"
     echo -e "  ${BCYAN}[3]${NC} Beide aktivieren"
     echo ""
     read -rp "Auswahl [1-3, Leerlassen für aktuelle Werte]: " SERVICE_CHOICE

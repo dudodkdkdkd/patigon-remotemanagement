@@ -61,6 +61,33 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Helper to update variables in the config file
+update_config_var() {
+    local key="$1"
+    local value="$2"
+    local file="$3"
+    
+    # Escape special characters for sed replacement
+    local escaped_val
+    escaped_val=$(echo "$value" | sed 's/[\/&]/\\&/g')
+    
+    if grep -q "^${key}=" "$file" 2>/dev/null; then
+        if sed --version >/dev/null 2>&1; then
+            sed -i "s/^${key}=.*/${key}=\"${escaped_val}\"/" "$file"
+        else
+            sed -i "" "s/^${key}=.*/${key}=\"${escaped_val}\"/" "$file"
+        fi
+    else
+        echo "${key}=\"${value}\"" >> "$file"
+    fi
+}
+
+# Check if script is running in an interactive terminal session
+INTERACTIVE=false
+if [ -t 0 ]; then
+    INTERACTIVE=true
+fi
+
 # 2. Parse arguments
 PURGE=false
 for arg in "$@"; do
@@ -71,48 +98,117 @@ for arg in "$@"; do
     esac
 done
 
-print_header "Stopping persistent remote control services"
+STOP_SERVICES=true
+REMOVE_GLOBAL_COMMANDS=false
+REMOVE_CONFIG=false
+UNINSTALL_CLI_TOOLS=false
 
-# 3. Stop and disable claude-remote
-if systemctl is-active --quiet claude-remote || systemctl is-failed --quiet claude-remote; then
-    systemctl stop claude-remote || true
-    print_success "Claude-remote Dienst gestoppt."
-fi
-if systemctl is-enabled --quiet claude-remote; then
-    systemctl disable claude-remote || true
-    print_success "Claude-remote Dienst deaktiviert."
-fi
-if [ -f /etc/systemd/system/claude-remote.service ]; then
-    rm -f /etc/systemd/system/claude-remote.service
-    print_success "/etc/systemd/system/claude-remote.service entfernt."
-fi
-
-# 4. Stop and disable codex-remote
-if systemctl is-active --quiet codex-remote || systemctl is-failed --quiet codex-remote; then
-    systemctl stop codex-remote || true
-    print_success "Codex-remote Dienst gestoppt."
-fi
-if systemctl is-enabled --quiet codex-remote; then
-    systemctl disable codex-remote || true
-    print_success "Codex-remote Dienst deaktiviert."
-fi
-if [ -f /etc/systemd/system/codex-remote.service ]; then
-    rm -f /etc/systemd/system/codex-remote.service
-    print_success "/etc/systemd/system/codex-remote.service entfernt."
-fi
-
-# 5. Reload systemd configuration
-print_info "Lade systemd-Manager-Konfiguration neu..."
-systemctl daemon-reload
-systemctl reset-failed
-print_success "Dienste erfolgreich gestoppt und Systemd-Definitionen entfernt."
-
-# 6. Purge configurations and global scripts if requested
 if [ "$PURGE" = "true" ]; then
+    REMOVE_GLOBAL_COMMANDS=true
+    REMOVE_CONFIG=true
+    UNINSTALL_CLI_TOOLS=true
+elif [ "$INTERACTIVE" = "true" ]; then
+    print_header "Deinstallations-Assistent"
+    echo -e "Bitte entscheide der Reihe nach, was deinstalliert/entfernt werden soll:"
     echo ""
-    print_header "Purge: Konfigurationen und globale Installationen löschen"
 
-    # Remove global commands
+    read -rp "  1. Hintergrunddienste stoppen und Systemd-Dateien löschen? [Y/n]: " CHOICE_SERVICES
+    if [[ "$CHOICE_SERVICES" =~ ^[Nn]$ ]]; then
+        STOP_SERVICES=false
+    fi
+
+    read -rp "  2. CLI-Tools (Claude Code, OpenAI Codex) deinstallieren & Anmeldedaten löschen? [y/N]: " CHOICE_CLI
+    if [[ "$CHOICE_CLI" =~ ^[Yy]$ ]]; then
+        UNINSTALL_CLI_TOOLS=true
+    fi
+
+    read -rp "  3. Globale Befehls-Verknüpfungen aus /usr/local/bin entfernen? [y/N]: " CHOICE_COMMANDS
+    if [[ "$CHOICE_COMMANDS" =~ ^[Yy]$ ]]; then
+        REMOVE_GLOBAL_COMMANDS=true
+    fi
+
+    read -rp "  4. Konfigurationsverzeichnis /etc/claude-remote (mit config.env) löschen? [y/N]: " CHOICE_CONFIG
+    if [[ "$CHOICE_CONFIG" =~ ^[Yy]$ ]]; then
+        REMOVE_CONFIG=true
+    fi
+    echo ""
+fi
+
+# We can execute the steps now
+
+if [ "$STOP_SERVICES" = "true" ]; then
+    print_header "Stopping persistent remote control services"
+    
+    # 3. Stop and disable claude-remote
+    if systemctl is-active --quiet claude-remote 2>/dev/null || systemctl is-failed --quiet claude-remote 2>/dev/null; then
+        systemctl stop claude-remote || true
+        print_success "Claude-remote Dienst gestoppt."
+    fi
+    if systemctl is-enabled --quiet claude-remote 2>/dev/null; then
+        systemctl disable claude-remote || true
+        print_success "Claude-remote Dienst deaktiviert."
+    fi
+    if [ -f /etc/systemd/system/claude-remote.service ]; then
+        rm -f /etc/systemd/system/claude-remote.service
+        print_success "/etc/systemd/system/claude-remote.service entfernt."
+    fi
+
+    # 4. Stop and disable codex-remote
+    if systemctl is-active --quiet codex-remote 2>/dev/null || systemctl is-failed --quiet codex-remote 2>/dev/null; then
+        systemctl stop codex-remote || true
+        print_success "Codex-remote Dienst gestoppt."
+    fi
+    if systemctl is-enabled --quiet codex-remote 2>/dev/null; then
+        systemctl disable codex-remote || true
+        print_success "Codex-remote Dienst deaktiviert."
+    fi
+    if [ -f /etc/systemd/system/codex-remote.service ]; then
+        rm -f /etc/systemd/system/codex-remote.service
+        print_success "/etc/systemd/system/codex-remote.service entfernt."
+    fi
+
+    # 5. Reload systemd configuration
+    print_info "Lade systemd-Manager-Konfiguration neu..."
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl reset-failed 2>/dev/null || true
+    print_success "Dienste erfolgreich gestoppt und Systemd-Definitionen entfernt."
+
+    # Reset configuration to false so they show up as inaktiv next time (if config folder is NOT removed)
+    if [ "$REMOVE_CONFIG" = "false" ]; then
+        CONFIG_FILE="/etc/claude-remote/config.env"
+        if [ -f "$CONFIG_FILE" ]; then
+            update_config_var "RUN_CLAUDE" "false" "$CONFIG_FILE"
+            update_config_var "RUN_CODEX" "false" "$CONFIG_FILE"
+            print_success "Dienst-Konfigurationen in $CONFIG_FILE auf inaktiv (false) zurückgesetzt."
+        fi
+    fi
+fi
+
+if [ "$UNINSTALL_CLI_TOOLS" = "true" ]; then
+    print_header "Deinstalliere CLI-Tools & Anmeldedaten"
+    if command -v npm >/dev/null 2>&1; then
+        print_info "Deinstalliere Claude Code NPM-Paket..."
+        npm uninstall -g @anthropic-ai/claude-code || true
+        print_info "Deinstalliere OpenAI Codex NPM-Paket..."
+        npm uninstall -g @openai/codex || true
+    fi
+    
+    if [ -d "$HOME/.claude" ]; then
+        rm -rf "$HOME/.claude"
+        print_success "Claude-Konfigurationsverzeichnis entfernt: $HOME/.claude"
+    fi
+    if [ -f "$HOME/.local/bin/claude" ]; then
+        rm -f "$HOME/.local/bin/claude"
+        print_success "Claude-Binary entfernt: $HOME/.local/bin/claude"
+    fi
+    if [ -d "$HOME/.codex" ]; then
+        rm -rf "$HOME/.codex"
+        print_success "Codex-Konfigurationsverzeichnis entfernt: $HOME/.codex"
+    fi
+fi
+
+if [ "$REMOVE_GLOBAL_COMMANDS" = "true" ]; then
+    print_header "Entferne globale Befehle"
     if [ -f "/usr/local/bin/prodstart" ]; then
         rm -f "/usr/local/bin/prodstart"
         print_success "Globaler Befehl entfernt: /usr/local/bin/prodstart"
@@ -125,19 +221,20 @@ if [ "$PURGE" = "true" ]; then
         rm -f "/usr/local/bin/devstart"
         print_success "Globaler Befehl entfernt: /usr/local/bin/devstart"
     fi
+fi
 
-    # Remove configuration directory
+if [ "$REMOVE_CONFIG" = "true" ]; then
+    print_header "Entferne Konfigurationsdateien"
     if [ -d "/etc/claude-remote" ]; then
         rm -rf "/etc/claude-remote"
         print_success "Konfigurationsverzeichnis entfernt: /etc/claude-remote"
     fi
+fi
 
-    print_success "Deinstallation abgeschlossen! Alle Dateien und Einstellungen wurden gelöscht."
-else
-    echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
-    print_info "Hinweis: Konfigurationsdateien unter /etc/claude-remote/ und Skripte"
-    print_info "         in /usr/local/bin/ wurden beibehalten."
+echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+print_success "Bereinigung erfolgreich abgeschlossen!"
+if [ "$REMOVE_CONFIG" = "false" ] || [ "$REMOVE_GLOBAL_COMMANDS" = "false" ] || [ "$UNINSTALL_CLI_TOOLS" = "false" ]; then
+    print_info "Hinweis: Einige Komponenten wurden vereinbarungsgemäß behalten."
     print_info "         Um alles vollständig zu deinstallieren, führe aus: ${BOLD}prodstop --purge${NC}"
-    echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
 fi
 echo -e "${BCYAN}========================================================================${NC}"
