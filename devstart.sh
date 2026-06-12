@@ -7,6 +7,12 @@
 
 set -e
 
+# Root Check
+if [ "$EUID" -ne 0 ]; then
+    echo "Fehler: Bitte mit sudo ausführen." >&2
+    exit 1
+fi
+
 # Helper to resolve absolute directory path
 resolve_dir() {
     local dir="$1"

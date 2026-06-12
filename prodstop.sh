@@ -9,7 +9,7 @@ set -e
 
 # 1. Root Check
 if [ "$EUID" -ne 0 ]; then
-    echo "Error: This script must be run as root or with sudo." >&2
+    echo "Fehler: Bitte mit sudo ausführen." >&2
     exit 1
 fi
 
