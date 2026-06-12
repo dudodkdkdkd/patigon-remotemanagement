@@ -7,9 +7,57 @@
 
 set -e
 
+# ANSI Color Codes for premium CLI experience
+NC='\033[0m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[0;37m'
+BRED='\033[1;31m'
+BGREEN='\033[1;32m'
+BYELLOW='\033[1;33m'
+BBLUE='\033[1;34m'
+BCYAN='\033[1;36m'
+BWHITE='\033[1;37m'
+
+# Helper functions for structured output
+print_header() {
+    local title="$1"
+    echo -e "${BCYAN}┌──────────────────────────────────────────────────────────────────────┐${NC}"
+    printf "${BCYAN}│${NC}  ${BWHITE}%-64s${NC}  ${BCYAN}│${NC}\n" "$title"
+    echo -e "${BCYAN}└──────────────────────────────────────────────────────────────────────┘${NC}"
+}
+
+print_step() {
+    local num="$1"
+    local desc="$2"
+    echo -e "\n${BBLUE}[Step $num]${NC} ${BWHITE}$desc${NC}"
+    echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+}
+
+print_success() {
+    echo -e "${BGREEN}✔ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${BYELLOW}⚠ $1${NC}"
+}
+
+print_error() {
+    echo -e "${BRED}✘ $1${NC}" >&2
+}
+
+print_info() {
+    echo -e "${BCYAN}ℹ $1${NC}"
+}
+
 # Root Check
 if [ "$EUID" -ne 0 ]; then
-    echo "Fehler: Bitte mit sudo ausführen." >&2
+    print_error "Bitte mit sudo ausführen."
     exit 1
 fi
 
@@ -91,11 +139,11 @@ fi
 # Load local environment
 if [ -f "$ENV_FILE" ]; then
     chmod 600 "$ENV_FILE"
-    echo "[+] Loading environment from: $ENV_FILE"
+    print_info "Lade Umgebung aus: $ENV_FILE"
     # shellcheck disable=SC1090
     . "$ENV_FILE"
 else
-    echo "[!] Warning: No .env configuration found. Using default values."
+    print_warning "Keine .env-Konfigurationsdatei gefunden. Nutze Standardwerte."
 fi
 
 # Apply default values if not configured
@@ -127,16 +175,68 @@ get_executable_path() {
 CLAUDE_EXEC=$(get_executable_path "$CLAUDE_PATH" "claude")
 CODEX_EXEC=$(get_executable_path "$CODEX_PATH" "codex")
 
-echo "========================================================================"
-echo " Starting local development remote control instances..."
-echo " - Workspace: $WORKSPACE_DIR"
-echo " - Claude:    $RUN_CLAUDE (Executable: $CLAUDE_EXEC)"
-echo " - Codex:     $RUN_CODEX (Executable: $CODEX_EXEC, Auth: $CODEX_AUTH_TYPE)"
-echo "========================================================================"
+# Verify Claude Credentials
+if [ "$RUN_CLAUDE" = "true" ]; then
+    CLAUDE_CREDENTIALS="$HOME/.claude/.credentials.json"
+    if [ ! -f "$CLAUDE_CREDENTIALS" ]; then
+        print_warning "Keine Claude Code Anmeldedaten gefunden unter $CLAUDE_CREDENTIALS."
+        echo -e "Wir starten jetzt die Anmeldung für Claude Code."
+        read -rp "Drücke [ENTER] um den Login-Vorgang zu starten..."
+        
+        echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+        if [ -x "$CLAUDE_EXEC" ]; then
+            "$CLAUDE_EXEC" auth login || true
+        elif command -v claude >/dev/null 2>&1; then
+            claude auth login || true
+        else
+            print_error "Claude CLI konnte nicht ausgeführt werden."
+        fi
+        echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+        
+        if [ ! -f "$CLAUDE_CREDENTIALS" ]; then
+            print_error "Claude Anmeldedatei wurde nicht erstellt. Abbruch."
+            exit 1
+        fi
+        print_success "Claude Anmeldung erfolgreich abgeschlossen!"
+    fi
+fi
+
+# Verify Codex Credentials
+if [ "$RUN_CODEX" = "true" ] && [ "$CODEX_AUTH_TYPE" = "subscription" ]; then
+    CODEX_CREDENTIALS="$HOME/.codex/auth.json"
+    if [ ! -f "$CODEX_CREDENTIALS" ]; then
+        print_warning "Keine Codex Anmeldedaten gefunden unter $CODEX_CREDENTIALS."
+        echo -e "Wir starten jetzt die Anmeldung für OpenAI Codex."
+        read -rp "Drücke [ENTER] um den Login-Vorgang zu starten..."
+        
+        echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+        if [ -x "$CODEX_EXEC" ]; then
+            "$CODEX_EXEC" login --device-auth || true
+        elif command -v codex >/dev/null 2>&1; then
+            codex login --device-auth || true
+        else
+            print_error "Codex CLI konnte nicht ausgeführt werden."
+        fi
+        echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
+        
+        if [ ! -f "$CODEX_CREDENTIALS" ]; then
+            print_error "Codex Anmeldedatei wurde nicht erstellt. Abbruch."
+            exit 1
+        fi
+        print_success "Codex Anmeldung erfolgreich abgeschlossen!"
+    fi
+fi
+
+print_header "Start dev remote control services"
+print_step "1" "Dienste verifizieren & starten"
+echo -e "  Workspace: ${BLUE}$WORKSPACE_DIR${NC}"
+echo -e "  Claude:    $([ "$RUN_CLAUDE" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$CLAUDE_EXEC${NC})" || echo -e "${RED}inaktiv${NC}")"
+echo -e "  Codex:     $([ "$RUN_CODEX" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$CODEX_EXEC${NC}, Auth: $CODEX_AUTH_TYPE)" || echo -e "${RED}inaktiv${NC}")"
+echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
 
 if [ "$RUN_CLAUDE" != "true" ] && [ "$RUN_CODEX" != "true" ]; then
-    echo "[-] Error: Both RUN_CLAUDE and RUN_CODEX are disabled." >&2
-    echo "    Please enable at least one service in $ENV_FILE." >&2
+    print_error "Beide Dienste (RUN_CLAUDE und RUN_CODEX) sind deaktiviert."
+    print_error "Bitte aktiviere mindestens einen Dienst in $ENV_FILE."
     exit 1
 fi
 
@@ -148,13 +248,11 @@ pids=()
 # Graceful cleanup function
 cleanup() {
     echo ""
-    echo "========================================================================"
-    echo " Shutting down all local remote-control services..."
-    echo "========================================================================"
+    print_header "Beende alle lokalen Dienste..."
     for pid in "${pids[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" || true
-            echo "[+] Stopped service process with PID $pid"
+            print_success "Dienst mit PID $pid gestoppt"
         fi
     done
     exit 0
@@ -167,36 +265,36 @@ trap cleanup SIGINT SIGTERM EXIT
 if [ "$RUN_CLAUDE" = "true" ]; then
     # Validate execution
     if [ ! -x "$CLAUDE_EXEC" ] && [ "$CLAUDE_EXEC" != "claude" ]; then
-        echo "[!] Error: Claude CLI is not executable or not found in PATH." >&2
+        print_error "Claude CLI ist nicht ausführbar oder wurde im PATH nicht gefunden."
         exit 1
     fi
     
-    echo "[+] Starting Claude Remote Control in background..."
+    print_info "Starte Claude Remote Control im Hintergrund..."
     (
         cd "$WORKSPACE_DIR"
         export TERM=dumb
         exec "$CLAUDE_EXEC" remote-control
     ) &
     pids+=($!)
-    echo "    Claude Remote Control started (PID ${pids[-1]})"
+    print_success "Claude Remote Control gestartet (PID ${pids[-1]})"
 fi
 
 # Start Codex Remote Control
 if [ "$RUN_CODEX" = "true" ]; then
     # Validate execution
     if [ ! -x "$CODEX_EXEC" ] && [ "$CODEX_EXEC" != "codex" ]; then
-        echo "[!] Error: Codex CLI is not executable or not found in PATH." >&2
+        print_error "Codex CLI ist nicht ausführbar oder wurde im PATH nicht gefunden."
         exit 1
     fi
     
     if [ "$CODEX_AUTH_TYPE" = "api_key" ]; then
         if [ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "your_openai_api_key_here" ]; then
-            echo "[-] Error: CODEX_AUTH_TYPE is set to 'api_key' but OPENAI_API_KEY is not configured in $ENV_FILE." >&2
+            print_error "CODEX_AUTH_TYPE ist 'api_key', aber OPENAI_API_KEY ist in $ENV_FILE nicht konfiguriert."
             exit 1
         fi
     fi
     
-    echo "[+] Starting Codex Remote Control in background..."
+    print_info "Starte Codex Remote Control im Hintergrund..."
     (
         cd "$WORKSPACE_DIR"
         export TERM=dumb
@@ -206,13 +304,13 @@ if [ "$RUN_CODEX" = "true" ]; then
         exec "$CODEX_EXEC" remote-control
     ) &
     pids+=($!)
-    echo "    Codex Remote Control started (PID ${pids[-1]})"
+    print_success "Codex Remote Control gestartet (PID ${pids[-1]})"
 fi
 
-echo "========================================================================"
-echo " Services are running! Streaming output logs..."
-echo " Press [Ctrl+C] to stop all services."
-echo "========================================================================"
+echo -e "${BCYAN}========================================================================${NC}"
+echo -e "  ${BGREEN}Dienste sind aktiv!${NC} Logs werden gestreamt..."
+echo -e "  Drücke ${BOLD}[Ctrl+C]${NC} zum Beenden aller Hintergrundprozesse."
+echo -e "${BCYAN}========================================================================${NC}"
 
 # Block and wait for child processes
 wait
