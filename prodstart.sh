@@ -49,6 +49,27 @@ find_secret_dir() {
     return 1
 }
 
+# Helper to update variables in the config file
+update_config_var() {
+    local key="$1"
+    local value="$2"
+    local file="$3"
+    
+    # Escape special characters for sed replacement
+    local escaped_val
+    escaped_val=$(echo "$value" | sed 's/[\/&]/\\&/g')
+    
+    if grep -q "^${key}=" "$file"; then
+        if sed --version >/dev/null 2>&1; then
+            sed -i "s/^${key}=.*/${key}=\"${escaped_val}\"/" "$file"
+        else
+            sed -i "" "s/^${key}=.*/${key}=\"${escaped_val}\"/" "$file"
+        fi
+    else
+        echo "${key}=\"${value}\"" >> "$file"
+    fi
+}
+
 # 2. Config directory initialization
 if [ ! -d "$CONFIG_DIR" ]; then
     mkdir -p "$CONFIG_DIR"
@@ -60,9 +81,10 @@ if [ ! -f "$CONFIG_FILE" ]; then
     # Try searching in secret directory (similar to Capential)
     if SECRET_DIR="$(find_secret_dir)"; then
         echo "[+] Secret directory found at: $SECRET_DIR"
-        for name in "env.patigon-remotemanagement" "env.patigon.remotemanagement" "env.patigon"; do
+        for name in "env.patigon-remotemanagement" "env.patigon.remotemanagement" "env.remotemanagement"; do
             if [ -f "$SECRET_DIR/$name" ]; then
                 cp "$SECRET_DIR/$name" "$CONFIG_FILE"
+                chmod 600 "$CONFIG_FILE"
                 echo "[+] Copied secret environment $name to $CONFIG_FILE"
                 break
             fi
@@ -77,9 +99,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
         elif [ -f "$SCRIPT_DIR/config.env.example" ]; then
             cp "$SCRIPT_DIR/config.env.example" "$CONFIG_FILE"
             echo "[+] Initialized new config template at $CONFIG_FILE"
-            echo "    Please edit $CONFIG_FILE to customize your options, then run 'prodstart' again."
             chmod 600 "$CONFIG_FILE"
-            exit 0
         else
             echo "[-] Error: No configuration template found. Please create $CONFIG_FILE manually." >&2
             exit 1
@@ -90,11 +110,207 @@ fi
 # Secure config file
 chmod 600 "$CONFIG_FILE"
 
-# 4. Load configuration
+# Load current configuration
 # shellcheck disable=SC1090
 . "$CONFIG_FILE"
 
 # Apply defaults if variables are missing
+RUN_CLAUDE="${RUN_CLAUDE:-true}"
+RUN_CODEX="${RUN_CODEX:-false}"
+CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
+CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
+WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/claude-workspace}"
+CODEX_AUTH_TYPE="${CODEX_AUTH_TYPE:-subscription}"
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+
+# Check if script is running in an interactive terminal session
+INTERACTIVE=false
+if [ -t 0 ]; then
+    INTERACTIVE=true
+fi
+
+# 4. Interactive Configuration Wizard
+if [ "$INTERACTIVE" = "true" ]; then
+    echo "========================================================================"
+    echo " Claude Code & Codex Service Configuration Wizard"
+    echo "========================================================================"
+    echo "Welche Remote-Control Dienste möchtest du konfigurieren und aktivieren?"
+    echo "1) Claude Code (aktuell aktiv: $RUN_CLAUDE)"
+    echo "2) OpenAI Codex (aktuell aktiv: $RUN_CODEX)"
+    echo "3) Beide"
+    read -rp "Auswahl [1-3, Leerlassen für aktuelle Werte]: " SERVICE_CHOICE
+
+    case "$SERVICE_CHOICE" in
+        1)
+            RUN_CLAUDE=true
+            RUN_CODEX=false
+            ;;
+        2)
+            RUN_CLAUDE=false
+            RUN_CODEX=true
+            ;;
+        3)
+            RUN_CLAUDE=true
+            RUN_CODEX=true
+            ;;
+    esac
+
+    update_config_var "RUN_CLAUDE" "$RUN_CLAUDE" "$CONFIG_FILE"
+    update_config_var "RUN_CODEX" "$RUN_CODEX" "$CONFIG_FILE"
+
+    # Ensure workspace folder exists
+    read -rp "Workspace-Verzeichnis [$WORKSPACE_DIR]: " WS_INPUT
+    if [ -n "$WS_INPUT" ]; then
+        WORKSPACE_DIR="$WS_INPUT"
+        update_config_var "WORKSPACE_DIR" "$WORKSPACE_DIR" "$CONFIG_FILE"
+    fi
+    mkdir -p "$WORKSPACE_DIR"
+
+    # Claude CLI Install and Login check
+    if [ "$RUN_CLAUDE" = "true" ]; then
+        # Check install
+        if [ ! -x "$CLAUDE_PATH" ] && ! command -v claude >/dev/null 2>&1; then
+            echo ""
+            echo "[!] Claude CLI wurde nicht auf dem System gefunden."
+            read -rp "Möchtest du Claude Code jetzt automatisch installieren? [Y/n]: " INSTALL_CLAUDE
+            if [[ ! "$INSTALL_CLAUDE" =~ ^[Nn]$ ]]; then
+                if command -v npm >/dev/null 2>&1; then
+                    npm install -g @anthropic-ai/claude-code
+                else
+                    curl -fsSL https://claude.ai/install.sh | sh
+                fi
+                
+                # Re-detect path
+                if command -v claude >/dev/null 2>&1; then
+                    CLAUDE_PATH=$(command -v claude)
+                elif [ -x "/root/.local/bin/claude" ]; then
+                    CLAUDE_PATH="/root/.local/bin/claude"
+                fi
+                update_config_var "CLAUDE_PATH" "$CLAUDE_PATH" "$CONFIG_FILE"
+            fi
+        fi
+
+        # Verify Claude Credentials
+        CLAUDE_CREDENTIALS="/root/.claude/.credentials.json"
+        if [ ! -f "$CLAUDE_CREDENTIALS" ]; then
+            echo ""
+            echo "[!] Keine Claude Code Anmeldedaten gefunden unter $CLAUDE_CREDENTIALS."
+            echo "    Wir starten jetzt das Claude CLI interaktiv, damit du dich einloggen"
+            echo "    und den Workspace trusten kannst."
+            echo "    Bitte melde dich an und beende das CLI danach mit Ctrl+C oder 'exit'."
+            echo "========================================================================"
+            read -rp "Drücke [ENTER] um den Login-Vorgang zu starten..."
+            
+            cd "$WORKSPACE_DIR"
+            # Execute claude CLI
+            if [ -x "$CLAUDE_PATH" ]; then
+                "$CLAUDE_PATH" || true
+            elif command -v claude >/dev/null 2>&1; then
+                claude || true
+            else
+                echo "[-] Fehler: Claude CLI konnte nicht ausgeführt werden."
+            fi
+            
+            if [ ! -f "$CLAUDE_CREDENTIALS" ]; then
+                echo "[!] Warnung: Claude Anmeldedatei wurde nicht erstellt."
+                echo "    Der Remote-Dienst wird eventuell nicht funktionieren."
+            else
+                echo "[+] Claude Anmeldung erfolgreich abgeschlossen!"
+            fi
+        fi
+    fi
+
+    # Codex CLI Install, Auth and Login check
+    if [ "$RUN_CODEX" = "true" ]; then
+        # Check install
+        if [ ! -x "$CODEX_PATH" ] && ! command -v codex >/dev/null 2>&1; then
+            echo ""
+            echo "[!] OpenAI Codex CLI wurde nicht auf dem System gefunden."
+            read -rp "Möchtest du OpenAI Codex jetzt automatisch installieren? (Erfordert Node.js/npm) [Y/n]: " INSTALL_CODEX
+            if [[ ! "$INSTALL_CODEX" =~ ^[Nn]$ ]]; then
+                if command -v npm >/dev/null 2>&1; then
+                    npm install -g @openai/codex
+                else
+                    echo "[-] Fehler: npm ist erforderlich, um @openai/codex zu installieren. Bitte installiere Node.js und npm zuerst." >&2
+                    exit 1
+                fi
+                
+                # Re-detect path
+                if command -v codex >/dev/null 2>&1; then
+                    CODEX_PATH=$(command -v codex)
+                fi
+                update_config_var "CODEX_PATH" "$CODEX_PATH" "$CONFIG_FILE"
+            fi
+        fi
+
+        # Ask for Codex Auth Type
+        echo ""
+        echo "Welche Authentifizierungsmethode soll für Codex verwendet werden?"
+        echo "1) Subscription (Abonnement - Web OAuth Login)"
+        echo "2) API-Key (OpenAI API-Schlüssel)"
+        read -rp "Auswahl [1-2, Leerlassen für aktuellen Wert '${CODEX_AUTH_TYPE}']: " AUTH_CHOICE
+
+        case "$AUTH_CHOICE" in
+            1) CODEX_AUTH_TYPE="subscription" ;;
+            2) CODEX_AUTH_TYPE="api_key" ;;
+        esac
+        update_config_var "CODEX_AUTH_TYPE" "$CODEX_AUTH_TYPE" "$CONFIG_FILE"
+
+        if [ "$CODEX_AUTH_TYPE" = "api_key" ]; then
+            # API Key Input
+            if [ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "your_openai_api_key_here" ]; then
+                echo ""
+                echo "[!] Kein gültiger OpenAI API-Key in der Konfiguration vorhanden."
+                while true; do
+                    read -rp "Bitte gib deinen OpenAI API-Key ein (z. B. sk-proj-...): " KEY_INPUT
+                    if [[ "$KEY_INPUT" =~ ^sk- ]]; then
+                        OPENAI_API_KEY="$KEY_INPUT"
+                        update_config_var "OPENAI_API_KEY" "$OPENAI_API_KEY" "$CONFIG_FILE"
+                        echo "[+] API-Key erfolgreich gespeichert!"
+                        break
+                    else
+                        echo "[-] Ungültiges Format. Der API-Key muss mit 'sk-' beginnen. Bitte erneut versuchen."
+                    fi
+                done
+            fi
+        else
+            # Verify Codex Credentials (Subscription)
+            CODEX_CREDENTIALS="/root/.codex/auth.json"
+            if [ ! -f "$CODEX_CREDENTIALS" ]; then
+                echo ""
+                echo "[!] Keine Codex Anmeldedaten gefunden unter $CODEX_CREDENTIALS."
+                echo "    Wir starten jetzt das Codex CLI interaktiv, damit du dich in dein"
+                echo "    ChatGPT-Konto einloggen kannst."
+                echo "    Bitte melde dich an und beende das CLI danach."
+                echo "========================================================================"
+                read -rp "Drücke [ENTER] um den Login-Vorgang zu starten..."
+                
+                cd "$WORKSPACE_DIR"
+                if [ -x "$CODEX_PATH" ]; then
+                    "$CODEX_PATH" || true
+                elif command -v codex >/dev/null 2>&1; then
+                    codex || true
+                else
+                    echo "[-] Fehler: Codex CLI konnte nicht ausgeführt werden."
+                fi
+                
+                if [ ! -f "$CODEX_CREDENTIALS" ]; then
+                    echo "[!] Warnung: Codex Anmeldedatei wurde nicht erstellt."
+                    echo "    Der Remote-Dienst wird eventuell nicht funktionieren."
+                else
+                    echo "[+] Codex Anmeldung erfolgreich abgeschlossen!"
+                fi
+            fi
+        fi
+    fi
+    echo "========================================================================"
+    echo ""
+fi
+
+# Reload configuration after wizard finishes
+# shellcheck disable=SC1090
+. "$CONFIG_FILE"
+
 RUN_CLAUDE="${RUN_CLAUDE:-true}"
 RUN_CODEX="${RUN_CODEX:-false}"
 CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
@@ -136,8 +352,9 @@ fi
 
 # 7. Claude Code Remote Control Service
 if [ "$RUN_CLAUDE" = "true" ]; then
-    if [ ! -x "$CLAUDE_PATH" ] && [ "$CLAUDE_PATH" != "claude" ]; then
-        echo "[!] Warning: Claude executable not found or not executable at $CLAUDE_PATH"
+    # Resolve path
+    if [ ! -x "$CLAUDE_PATH" ] && command -v claude >/dev/null 2>&1; then
+        CLAUDE_PATH=$(command -v claude)
     fi
 
     echo "[+] Generating /etc/systemd/system/claude-remote.service..."
@@ -188,15 +405,16 @@ fi
 
 # 8. Codex Remote Control Service
 if [ "$RUN_CODEX" = "true" ]; then
-    if [ ! -x "$CODEX_PATH" ] && [ "$CODEX_PATH" != "codex" ]; then
-        echo "[!] Warning: Codex executable not found or not executable at $CODEX_PATH"
+    # Resolve path
+    if [ ! -x "$CODEX_PATH" ] && command -v codex >/dev/null 2>&1; then
+        CODEX_PATH=$(command -v codex)
     fi
 
     # Auth configuration block
     CODEX_ENV_LINE=""
     if [ "$CODEX_AUTH_TYPE" = "api_key" ]; then
         if [ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "your_openai_api_key_here" ]; then
-            echo "[-] Error: CODEX_AUTH_TYPE is set to 'api_key' but OPENAI_API_KEY is not configured in $CONFIG_FILE." >&2
+            echo "[-] Error: CODEX_AUTH_TYPE is set to 'api_key' but OPENAI_API_KEY is not configured." >&2
             exit 1
         fi
         CODEX_ENV_LINE="Environment=\"OPENAI_API_KEY=${OPENAI_API_KEY}\""

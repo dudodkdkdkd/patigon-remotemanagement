@@ -60,9 +60,10 @@ else
     # Check secret directory to copy template
     if SECRET_DIR="$(find_secret_dir)"; then
         echo "[+] Secret directory found at: $SECRET_DIR"
-        for name in "env.patigon-remotemanagement" "env.patigon.remotemanagement" "env.patigon"; do
+        for name in "env.patigon-remotemanagement" "env.patigon.remotemanagement" "env.remotemanagement"; do
             if [ -f "$SECRET_DIR/$name" ]; then
                 cp "$SECRET_DIR/$name" "$ENV_FILE"
+                chmod 600 "$ENV_FILE"
                 echo "[+] Initialized local $ENV_FILE from secret environment $name"
                 break
             fi
@@ -73,6 +74,7 @@ else
     if [ ! -f "$ENV_FILE" ]; then
         if [ -f "$SCRIPT_DIR/config.env.example" ]; then
             cp "$SCRIPT_DIR/config.env.example" "$ENV_FILE"
+            chmod 600 "$ENV_FILE"
             echo "[+] Created local .env template at $ENV_FILE"
             echo "    Please edit this file to customize your options before running again."
             exit 0
@@ -82,6 +84,7 @@ fi
 
 # Load local environment
 if [ -f "$ENV_FILE" ]; then
+    chmod 600 "$ENV_FILE"
     echo "[+] Loading environment from: $ENV_FILE"
     # shellcheck disable=SC1090
     . "$ENV_FILE"

@@ -9,38 +9,37 @@ Mit diesen Skripten können beide Dienste über eine zentrale Konfiguration gest
 ## Features
 
 - **Zentrale Konfiguration**: Steuerung über ein einziges Environment-File.
-- **Secret Auto-Discovery**: Skripte suchen automatisch nach einem Secret-Verzeichnis (z. B. `/secret`, `../secret` oder `../SECRET`) und kopieren vordefinierte Umgebungsvariablen (`env.patigon`, `env.patigon-remotemanagement`), um die Einrichtung zu beschleunigen (analog zu Capential).
-- **Lokale Entwicklung (`devstart`)**: Starte Instanzen lokal im Vordergrund des Terminals mit interaktivem Logging und automatischem Cleanup (Ctrl+C). Verwendet das lokale `.env` im Projekt-Root.
+- **Secret Auto-Discovery**: Skripte suchen automatisch nach einem Secret-Verzeichnis (z. B. `/secret`, `../secret` oder `../SECRET`) und kopieren vordefinierte Umgebungsvariablen (`env.remotemanagement`, `env.patigon-remotemanagement`), um die Einrichtung zu beschleunigen (analog zu Capential).
+- **Interaktiver VPS-Setup-Assistent**: Bei Ausführung von `prodstart` im Terminal wirst du interaktiv durch die Auswahl der Dienste, Installation fehlender CLI-Tools sowie den Anmeldevorgang geleitet.
+- **Auto-Installation**: Fehlende Binaries für Claude und Codex werden auf Wunsch vollautomatisch heruntergeladen und installiert (npm/curl).
+- **Login-Verifizierung**: Prüft vor dem Service-Start, ob gültige Anmeldedaten vorhanden sind, und startet bei Bedarf den geführten Login-Vorgang im Terminal.
+- **Lokale Entwicklung (`devstart`)**: Starte Instanzen lokal im Vordergrund des Terminals mit interaktivem Logging und automatischem Cleanup (Ctrl+C). Verwendet das lokale `.env` im Projekt-Root und die Rechte werden automatisch abgesichert (`chmod 600`).
 - **Autostart & Crash-Resistenz (Produktion)**: Automatischer systemd-Neustart nach System-Boot, Netzwerkunterbrechungen oder Abstürzen.
-- **Wahlfreie Dienste**: Aktiviere Claude, Codex oder beide gleichzeitig.
 - **Bequeme Verwaltung**: Globale Befehle `prodstart`, `prodstop` und `devstart` direkt im Terminal.
 
 ---
 
 ## Voraussetzungen
 
-### 1. Claude CLI & Vorbereitung
-- Installiere das Claude CLI (standardmäßig unter `/root/.local/bin/claude` auf dem VPS oder in deinem lokalen User-Pfad).
-- Lege dein Workspace-Verzeichnis an und akzeptiere den Trust-Dialog einmalig interaktiv:
-  ```bash
-  mkdir -p /opt/claude-workspace
-  cd /opt/claude-workspace
-  claude  # Trust-Dialog akzeptieren, dann mit Strg+C beenden
-  ```
-- Stelle sicher, dass du eingeloggt bist (Credentials befinden sich in `~/.claude/.credentials.json`).
+### 1. Berechtigungen
+- **VPS (Produktion)**: Das Skript `prodstart.sh` benötigt Root-Rechte (`sudo`), um systemd-Units zu registrieren und globale Befehle zu hinterlegen.
+- **Lokale Entwicklung**: `devstart.sh` kann ohne Root-Rechte als normaler Benutzer ausgeführt werden.
 
-### 2. Codex CLI & Vorbereitung
-- Installiere das Codex CLI global über npm:
-  ```bash
-  npm install -g @openai/codex
-  ```
-- **Bei Verwendung des Abonnements (Standard):**
-  Führe das CLI einmalig aus, um den Anmeldevorgang im Browser abzuschließen:
-  ```bash
-  codex  # Login abschließen, dann beenden
-  ```
-- **Bei Verwendung eines API-Keys:**
-  Trage den API-Key einfach in deiner `.env`/`config.env` ein.
+---
+
+## Installation & Erste Schritte (Produktion)
+
+1. Klonen oder kopiere die Skripte auf deinen VPS.
+2. Starte das Setup:
+   ```bash
+   sudo ./prodstart.sh
+   ```
+3. **Setup-Wizard**:
+   - Wähle, welche Dienste aktiviert werden sollen (Claude, Codex oder beide).
+   - Gib dein gewünschtes Workspace-Verzeichnis an.
+   - **Auto-Install**: Falls Claude oder Codex fehlen, fragt das Skript, ob sie automatisch installiert werden sollen.
+   - **Geführter Login**: Das Skript prüft deine Zugangsdaten. Falls du noch nicht eingeloggt bist, wird eine interaktive CLI-Sitzung gestartet, über die du dich per Web/QR-Code einloggen kannst.
+   - **API-Key Abfrage**: Falls Codex mit einem API-Key verwendet werden soll, wirst du zur Eingabe aufgefordert, falls noch kein Schlüssel in der Konfiguration vorhanden ist.
 
 ---
 
@@ -52,33 +51,11 @@ Für die lokale Entwicklung auf deinem Entwickler-Rechner (z. B. macOS oder Linu
    ```bash
    ./devstart.sh
    ```
-   *Hinweis: Wenn keine lokale `.env` existiert, sucht das Skript in den übergeordneten Ordnern nach einem `secret/`-Verzeichnis (z. B. `../secret/env.patigon`) und kopiert es automatisch.*
+   *Hinweis: Wenn keine lokale `.env` existiert, sucht das Skript in den übergeordneten Ordnern nach einem `secret/`-Verzeichnis (z. B. `../secret/env.remotemanagement`) und kopiert es automatisch.*
 
 2. Das Skript lädt die lokale `.env`, sucht nach `claude` und `codex` in deinem lokalen `$PATH` (um VPS-Pfade zu überschreiben) und startet beide Remote-Control-Prozesse interaktiv im Hintergrund deines Terminals.
 
-3. **Beenden:** Drücke einfach `[Ctrl+C]` im Terminal. Alle gestarteten Prozesse werden sofort sauber beendet.
-
----
-
-## Production-VPS (systemd-Service)
-
-Für den 24/7 Betrieb auf deinem Linux-VPS:
-
-1. Klonen oder kopiere die Skripte auf deinen VPS.
-2. Starte die Installation:
-   ```bash
-   sudo ./prodstart.sh
-   ```
-   *Hinweis: Falls `/etc/claude-remote/config.env` fehlt, sucht das Skript nach einem Secret-Verzeichnis und kopiert die Konfiguration. Alternativ wird ein Template erzeugt. Zudem werden die Skripte als globale Befehle registriert.*
-
-3. Passe bei Bedarf die Konfiguration an:
-   ```bash
-   sudo nano /etc/claude-remote/config.env
-   ```
-4. Aktualisiere und starte die Dienste:
-   ```bash
-   sudo prodstart
-   ```
+3. **Beenden**: Drücke einfach `[Ctrl+C]` im Terminal. Alle gestarteten Prozesse werden sofort sauber beendet.
 
 ---
 
@@ -87,6 +64,7 @@ Für den 24/7 Betrieb auf deinem Linux-VPS:
 Nach der ersten Installation auf dem VPS kannst du die Befehle von überall aus aufrufen:
 
 ### Dienste starten/aktualisieren (Produktion)
+Führt bei interaktivem Terminal den Konfigurations-Assistenten aus und startet die systemd-Services neu. Bei nicht-interaktivem Aufruf werden direkt die Services geladen:
 ```bash
 sudo prodstart
 ```
@@ -110,6 +88,8 @@ sudo prodstop --purge
 ---
 
 ## Konfiguration (`config.env` oder `.env`)
+
+Die Datei wird unter `/etc/claude-remote/config.env` (Produktion) oder im Projekt-Root als `.env` (Entwicklung) abgelegt und automatisch abgesichert (`chmod 600`).
 
 | Variable | Beschreibung | Standardwert |
 |---|---|---|
