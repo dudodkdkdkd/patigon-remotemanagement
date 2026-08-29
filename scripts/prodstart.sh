@@ -64,6 +64,10 @@ fi
 CONFIG_DIR="/etc/claude-remote"
 CONFIG_FILE="$CONFIG_DIR/config.env"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CODEX_CLEANUP_INSTALL_DIR="/usr/local/lib/patigon-remotemanagement"
+CODEX_CLEANUP_SCRIPT="${CODEX_CLEANUP_INSTALL_DIR}/cleanup_codex_releases.sh"
+CODEX_CLEANUP_SERVICE="/etc/systemd/system/codex-release-cleanup.service"
+CODEX_CLEANUP_TIMER="/etc/systemd/system/codex-release-cleanup.timer"
 
 # Helper to resolve absolute directory path
 resolve_dir() {
@@ -95,6 +99,87 @@ find_secret_dir() {
         fi
     done
     return 1
+}
+
+install_codex_cleanup_automation() {
+    local cleanup_source="${SCRIPT_DIR}/cleanup_codex_releases.sh"
+
+    if [ -f "$cleanup_source" ]; then
+        if ! install -d -m 755 "$CODEX_CLEANUP_INSTALL_DIR"; then
+            print_warning "Installationsverzeichnis für Codex-Release-Cleanup konnte nicht erstellt werden."
+            return 1
+        fi
+        if ! install -m 755 "$cleanup_source" "$CODEX_CLEANUP_SCRIPT"; then
+            print_warning "Codex-Release-Cleanup-Skript konnte nicht installiert werden."
+            return 1
+        fi
+    elif [ ! -x "$CODEX_CLEANUP_SCRIPT" ]; then
+        print_warning "Codex-Release-Cleanup-Skript nicht gefunden: $cleanup_source"
+        return 1
+    fi
+
+    if ! cat > "$CODEX_CLEANUP_SERVICE" <<EOF
+[Unit]
+Description=Remove obsolete Codex standalone releases
+ConditionPathIsDirectory=/root/.codex/packages/standalone/releases
+
+[Service]
+Type=oneshot
+ExecStart=${CODEX_CLEANUP_SCRIPT} --codex-home /root/.codex
+EOF
+    then
+        print_warning "Codex-Release-Cleanup-Service konnte nicht geschrieben werden."
+        return 1
+    fi
+
+    if ! cat > "$CODEX_CLEANUP_TIMER" <<'EOF'
+[Unit]
+Description=Daily cleanup of obsolete Codex standalone releases
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=codex-release-cleanup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    then
+        print_warning "Codex-Release-Cleanup-Timer konnte nicht geschrieben werden."
+        return 1
+    fi
+
+    if ! chmod 644 "$CODEX_CLEANUP_SERVICE" "$CODEX_CLEANUP_TIMER"; then
+        print_warning "Berechtigungen der Codex-Release-Cleanup-Units konnten nicht gesetzt werden."
+        return 1
+    fi
+    if ! systemctl daemon-reload; then
+        print_warning "systemd-Konfiguration konnte nicht neu geladen werden."
+        return 1
+    fi
+    if ! systemctl enable --now codex-release-cleanup.timer; then
+        print_warning "Codex-Release-Cleanup-Timer konnte nicht aktiviert werden."
+        return 1
+    fi
+    if ! systemctl is-enabled --quiet codex-release-cleanup.timer; then
+        print_warning "Codex-Release-Cleanup-Timer ist nach der Installation nicht aktiviert."
+        return 1
+    fi
+
+    if ! systemctl start codex-release-cleanup.service; then
+        print_warning "Das sofortige Codex-Release-Cleanup ist fehlgeschlagen."
+        return 1
+    fi
+
+    return 0
+}
+
+remove_codex_cleanup_automation() {
+    systemctl disable --now codex-release-cleanup.timer 2>/dev/null || true
+    rm -f "$CODEX_CLEANUP_SERVICE" "$CODEX_CLEANUP_TIMER"
+    systemctl daemon-reload
+    systemctl reset-failed codex-release-cleanup.service 2>/dev/null || true
 }
 
 # Helper to update variables in the config file
@@ -544,6 +629,11 @@ EOF
     systemctl enable codex-remote.service
     systemctl restart codex-remote.service
     print_success "Codex remote-control Dienst gestartet & aktiviert."
+    if ! install_codex_cleanup_automation; then
+        print_error "Tägliches Codex-Release-Cleanup konnte nicht vollständig installiert werden."
+        exit 1
+    fi
+    print_success "Tägliches Codex-Release-Cleanup installiert und ausgeführt."
 else
     # Disable and remove service if set to false
     if systemctl is-active --quiet codex-remote; then
@@ -559,6 +649,7 @@ else
         systemctl daemon-reload
         print_info "codex-remote.service systemd-Unit-Datei entfernt."
     fi
+    remove_codex_cleanup_automation
 fi
 
 # 9. Verify Status

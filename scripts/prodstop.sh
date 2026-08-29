@@ -167,6 +167,18 @@ if [ "$STOP_SERVICES" = "true" ]; then
         print_success "/etc/systemd/system/codex-remote.service entfernt."
     fi
 
+    if systemctl is-enabled --quiet codex-release-cleanup.timer 2>/dev/null; then
+        systemctl disable --now codex-release-cleanup.timer || true
+        print_success "Codex-Release-Cleanup-Timer deaktiviert."
+    fi
+    if [ -f /etc/systemd/system/codex-release-cleanup.service ] ||
+       [ -f /etc/systemd/system/codex-release-cleanup.timer ]; then
+        rm -f \
+            /etc/systemd/system/codex-release-cleanup.service \
+            /etc/systemd/system/codex-release-cleanup.timer
+        print_success "Codex-Release-Cleanup-Units entfernt."
+    fi
+
     # 5. Reload systemd configuration
     print_info "Lade systemd-Manager-Konfiguration neu..."
     systemctl daemon-reload 2>/dev/null || true
@@ -221,6 +233,11 @@ if [ "$REMOVE_GLOBAL_COMMANDS" = "true" ]; then
         rm -f "/usr/local/bin/devstart"
         print_success "Globaler Befehl entfernt: /usr/local/bin/devstart"
     fi
+fi
+
+if [ "$PURGE" = "true" ] && [ -d "/usr/local/lib/patigon-remotemanagement" ]; then
+    rm -rf "/usr/local/lib/patigon-remotemanagement"
+    print_success "Installierte Remotemanagement-Hilfsskripte entfernt."
 fi
 
 if [ "$REMOVE_CONFIG" = "true" ]; then

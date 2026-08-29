@@ -15,6 +15,7 @@ Mit diesen Skripten können beide Dienste über eine zentrale Konfiguration gest
 - **Login-Verifizierung**: Prüft vor dem Service-Start, ob gültige Anmeldedaten vorhanden sind, und startet bei Bedarf den geführten Login-Vorgang im Terminal.
 - **Lokale Entwicklung (`devstart`)**: Starte Instanzen lokal im Vordergrund des Terminals mit interaktivem Logging und automatischem Cleanup (Ctrl+C). Verwendet das lokale `.env` im Projekt-Root und die Rechte werden automatisch abgesichert (`chmod 600`).
 - **Autostart & Crash-Resistenz (Produktion)**: Automatischer systemd-Neustart nach System-Boot, Netzwerkunterbrechungen oder Abstürzen.
+- **Codex-Release-Retention**: Ein täglicher systemd-Timer entfernt veraltete Codex-Standalone-Releases des verwalteten Dienstbenutzers. Die aktuelle, jede laufende und eine zusätzliche Rollback-Version bleiben erhalten.
 - **Bequeme Verwaltung**: Globale Befehle `prodstart`, `prodstop` und `devstart` direkt im Terminal.
 
 ---
@@ -115,4 +116,15 @@ sudo journalctl -u codex-remote -f
 ```bash
 sudo systemctl status claude-remote
 sudo systemctl status codex-remote
+sudo systemctl status codex-release-cleanup.timer
+```
+
+### Codex-Release-Cleanup prüfen
+
+Das Produktionssetup bereinigt ausschließlich `/root/.codex`, weil der verwaltete
+Codex-Dienst als `root` läuft. Andere Benutzerverzeichnisse werden nicht durchsucht.
+
+```bash
+sudo /usr/local/lib/patigon-remotemanagement/cleanup_codex_releases.sh \
+  --codex-home /root/.codex --dry-run
 ```
