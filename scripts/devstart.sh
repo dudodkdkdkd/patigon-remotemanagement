@@ -259,6 +259,7 @@ cleanup() {
         pid="${pids[$i]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" || true
+            wait "$pid" 2>/dev/null || true
             print_success "${pid_names[$i]} gestoppt (PID $pid)"
         fi
     done
