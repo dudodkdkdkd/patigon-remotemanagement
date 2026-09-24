@@ -55,7 +55,7 @@ if kill -0 "$child_pid" 2>/dev/null; then
     echo "Desktop Commander wurde bei SIGTERM nicht beendet."
     exit 1
 fi
-rg -q 'Desktop Commander gestoppt' "$test_dir/output"
+grep -q 'Desktop Commander gestoppt' "$test_dir/output"
 
 cat > "$test_dir/fake-service" <<'EOF'
 #!/usr/bin/env bash
@@ -85,8 +85,8 @@ for _ in {1..50}; do
     sleep 0.1
 done
 [ -f "$FAKE_ALL_FILE" ] && [ "$(wc -l < "$FAKE_ALL_FILE")" -eq 3 ] || { cat "$test_dir/all-output"; exit 1; }
-[ "$(rg -c '^.* remote-control$' "$FAKE_ALL_FILE")" -eq 2 ]
-[ "$(rg -c '^.* remote$' "$FAKE_ALL_FILE")" -eq 1 ]
+[ "$(grep -c '^.* remote-control$' "$FAKE_ALL_FILE")" -eq 2 ]
+[ "$(grep -c '^.* remote$' "$FAKE_ALL_FILE")" -eq 1 ]
 kill -TERM "$launcher_pid"
 wait "$launcher_pid" || true
 launcher_pid=""
@@ -97,7 +97,7 @@ while read -r child_pid _; do
     fi
 done < "$FAKE_ALL_FILE"
 for name in Claude Codex 'Desktop Commander'; do
-    rg -q "$name gestoppt" "$test_dir/all-output"
+    grep -q "$name gestoppt" "$test_dir/all-output"
 done
 
 cat > "$test_dir/.env" <<EOF
