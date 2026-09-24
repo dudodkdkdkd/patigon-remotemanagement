@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# Claude Code & Codex Local Development Script (devstart)
+# Claude Code, Codex & Desktop Commander Local Development Script (devstart)
 # ==============================================================================
 # Runs remote control instances interactively in the foreground.
 # Prioritizes local project environment and resolves CLI paths using system PATH.
@@ -55,9 +55,9 @@ print_info() {
     echo -e "${BCYAN}ℹ $1${NC}"
 }
 
-# Root Check
-if [ "$EUID" -ne 0 ]; then
-    print_error "Bitte mit sudo ausführen."
+# Remote Desktop Commander must use the current user's credentials and permissions.
+if [ "$EUID" -eq 0 ]; then
+    print_error "devstart bitte als normaler Benutzer ohne sudo ausführen."
     exit 1
 fi
 
@@ -104,8 +104,8 @@ elif [ -f "$SCRIPT_DIR/.env" ]; then
     ENV_FILE="$SCRIPT_DIR/.env"
 else
     # Choose placement for new .env file
-    if [ -f "$SCRIPT_DIR/prodstart.sh" ]; then
-        REPO_DIR="$SCRIPT_DIR"
+    if [ -f "$SCRIPT_DIR/../config.env.example" ]; then
+        REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
     else
         REPO_DIR="$(pwd)"
     fi
@@ -126,8 +126,8 @@ else
     
     # Fallback to config.env.example if secret folder yielded nothing
     if [ ! -f "$ENV_FILE" ]; then
-        if [ -f "$SCRIPT_DIR/config.env.example" ]; then
-            cp "$SCRIPT_DIR/config.env.example" "$ENV_FILE"
+        if [ -f "$REPO_DIR/config.env.example" ]; then
+            cp "$REPO_DIR/config.env.example" "$ENV_FILE"
             chmod 600 "$ENV_FILE"
             echo "[+] Created local .env template at $ENV_FILE"
             echo "    Please edit this file to customize your options before running again."
@@ -149,8 +149,10 @@ fi
 # Apply default values if not configured
 RUN_CLAUDE="${RUN_CLAUDE:-true}"
 RUN_CODEX="${RUN_CODEX:-false}"
+RUN_DESKTOP_COMMANDER="${RUN_DESKTOP_COMMANDER:-false}"
 CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
 CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
+DESKTOP_COMMANDER_PATH="${DESKTOP_COMMANDER_PATH:-/usr/local/bin/desktop-commander}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/ai-workspace}"
 CODEX_AUTH_TYPE="${CODEX_AUTH_TYPE:-subscription}"
 
@@ -174,6 +176,7 @@ get_executable_path() {
 
 CLAUDE_EXEC=$(get_executable_path "$CLAUDE_PATH" "claude")
 CODEX_EXEC=$(get_executable_path "$CODEX_PATH" "codex")
+DESKTOP_COMMANDER_EXEC=$(get_executable_path "$DESKTOP_COMMANDER_PATH" "desktop-commander")
 
 # Verify Claude Credentials
 if [ "$RUN_CLAUDE" = "true" ]; then
@@ -232,10 +235,11 @@ print_step "1" "Dienste verifizieren & starten"
 echo -e "  Workspace: ${BLUE}$WORKSPACE_DIR${NC}"
 echo -e "  Claude:    $([ "$RUN_CLAUDE" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$CLAUDE_EXEC${NC})" || echo -e "${RED}inaktiv${NC}")"
 echo -e "  Codex:     $([ "$RUN_CODEX" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$CODEX_EXEC${NC}, Auth: $CODEX_AUTH_TYPE)" || echo -e "${RED}inaktiv${NC}")"
+echo -e "  Desktop Commander: $([ "$RUN_DESKTOP_COMMANDER" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$DESKTOP_COMMANDER_EXEC${NC})" || echo -e "${RED}inaktiv${NC}")"
 echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
 
-if [ "$RUN_CLAUDE" != "true" ] && [ "$RUN_CODEX" != "true" ]; then
-    print_error "Beide Dienste (RUN_CLAUDE und RUN_CODEX) sind deaktiviert."
+if [ "$RUN_CLAUDE" != "true" ] && [ "$RUN_CODEX" != "true" ] && [ "$RUN_DESKTOP_COMMANDER" != "true" ]; then
+    print_error "Alle Remote-Dienste sind deaktiviert."
     print_error "Bitte aktiviere mindestens einen Dienst in $ENV_FILE."
     exit 1
 fi
@@ -244,15 +248,18 @@ fi
 mkdir -p "$WORKSPACE_DIR"
 
 pids=()
+pid_names=()
 
 # Graceful cleanup function
 cleanup() {
     echo ""
     print_header "Beende alle lokalen Dienste..."
-    for pid in "${pids[@]}"; do
+    local i pid
+    for i in "${!pids[@]}"; do
+        pid="${pids[$i]}"
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" || true
-            print_success "Dienst mit PID $pid gestoppt"
+            print_success "${pid_names[$i]} gestoppt (PID $pid)"
         fi
     done
     exit 0
@@ -275,8 +282,10 @@ if [ "$RUN_CLAUDE" = "true" ]; then
         export TERM=dumb
         exec "$CLAUDE_EXEC" remote-control
     ) &
-    pids+=($!)
-    print_success "Claude Remote Control gestartet (PID ${pids[-1]})"
+    new_pid=$!
+    pids+=("$new_pid")
+    pid_names+=("Claude")
+    print_success "Claude Remote Control gestartet (PID $new_pid)"
 fi
 
 # Start Codex Remote Control
@@ -303,8 +312,26 @@ if [ "$RUN_CODEX" = "true" ]; then
         fi
         exec "$CODEX_EXEC" remote-control
     ) &
-    pids+=($!)
-    print_success "Codex Remote Control gestartet (PID ${pids[-1]})"
+    new_pid=$!
+    pids+=("$new_pid")
+    pid_names+=("Codex")
+    print_success "Codex Remote Control gestartet (PID $new_pid)"
+fi
+
+if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
+    if [ ! -x "$DESKTOP_COMMANDER_EXEC" ]; then
+        print_error "Desktop Commander ist nicht ausführbar: $DESKTOP_COMMANDER_EXEC"
+        exit 1
+    fi
+    print_info "Starte Desktop Commander Remote im Hintergrund..."
+    (
+        cd "$WORKSPACE_DIR"
+        exec "$DESKTOP_COMMANDER_EXEC" remote
+    ) &
+    new_pid=$!
+    pids+=("$new_pid")
+    pid_names+=("Desktop Commander")
+    print_success "Desktop Commander gestartet (PID $new_pid)"
 fi
 
 echo -e "${BCYAN}========================================================================${NC}"

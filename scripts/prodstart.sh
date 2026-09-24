@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# Claude Code & Codex Remote Services Installer and Startup Script (prodstart)
+# Claude Code, Codex & Desktop Commander Remote Services Installer (prodstart)
 # ==============================================================================
 # Operates as a persistent service manager on a Linux VPS.
 # Requires root privileges to write systemd configs and global binary paths.
@@ -68,6 +68,8 @@ CODEX_CLEANUP_INSTALL_DIR="/usr/local/lib/patigon-remotemanagement"
 CODEX_CLEANUP_SCRIPT="${CODEX_CLEANUP_INSTALL_DIR}/cleanup_codex_releases.sh"
 CODEX_CLEANUP_SERVICE="/etc/systemd/system/codex-release-cleanup.service"
 CODEX_CLEANUP_TIMER="/etc/systemd/system/codex-release-cleanup.timer"
+DESKTOP_COMMANDER_SERVICE="/etc/systemd/system/desktop-commander-remote.service"
+REMOTE_GROUP="ai-remote"
 
 # Helper to resolve absolute directory path
 resolve_dir() {
@@ -182,6 +184,121 @@ remove_codex_cleanup_automation() {
     systemctl reset-failed codex-release-cleanup.service 2>/dev/null || true
 }
 
+prepare_desktop_commander() {
+    local node_major installed_version account_home workspace_real
+
+    if [[ ! "$DESKTOP_COMMANDER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+       [[ ! "$DESKTOP_COMMANDER_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] ||
+       [[ ! "$DESKTOP_COMMANDER_HOME" =~ ^/var/lib/[a-zA-Z0-9._/-]+$ ]] ||
+       [[ "$DESKTOP_COMMANDER_HOME" == *"/../"* ]] ||
+       [[ "$DESKTOP_COMMANDER_HOME" == *"/.." ]] ||
+       [[ "$DESKTOP_COMMANDER_HOME" != "$(readlink -m "$DESKTOP_COMMANDER_HOME")" ]] ||
+       [[ ! "$DESKTOP_COMMANDER_PATH" =~ ^/[a-zA-Z0-9._/-]+$ ]] ||
+       [[ ! "$WORKSPACE_DIR" =~ ^/[a-zA-Z0-9._/-]+$ ]] ||
+       [[ "$WORKSPACE_DIR" == *"/../"* ]] ||
+       [[ "$WORKSPACE_DIR" == *"/.." ]]; then
+        print_error "Ungültige Desktop-Commander-Version, Benutzer- oder Pfadangabe in $CONFIG_FILE."
+        return 1
+    fi
+
+    if ! command -v node >/dev/null 2>&1; then
+        if [ "$INTERACTIVE" != "true" ]; then
+            print_error "Node.js >=18 fehlt. Installiere Node.js und starte prodstart erneut."
+            return 1
+        fi
+        read -rp "Node.js fehlt. Über den System-Paketmanager installieren? [Y/n]: " INSTALL_NODE
+        if [[ "$INSTALL_NODE" =~ ^[Nn]$ ]]; then
+            print_error "Desktop Commander benötigt Node.js >=18."
+            return 1
+        fi
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y nodejs npm
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y nodejs npm
+        else
+            print_error "Kein unterstützter Paketmanager gefunden. Installiere Node.js >=18 manuell."
+            return 1
+        fi
+    fi
+
+    node_major="$(node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/')"
+    if [[ ! "$node_major" =~ ^[0-9]+$ ]] || [ "$node_major" -lt 18 ]; then
+        print_error "Desktop Commander benötigt Node.js >=18 (gefunden: $(node --version 2>/dev/null || echo unbekannt))."
+        return 1
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        print_error "npm fehlt. Installiere npm und starte prodstart erneut."
+        return 1
+    fi
+    print_info "Node.js $(node --version) gefunden."
+
+    installed_version="$(npm --prefix /usr/local ls -g --json --depth=0 @wonderwhy-er/desktop-commander 2>/dev/null |
+        node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{try{console.log(JSON.parse(s).dependencies["@wonderwhy-er/desktop-commander"].version)}catch{}})')"
+    if [ "$installed_version" != "$DESKTOP_COMMANDER_VERSION" ]; then
+        print_info "Installiere Desktop Commander ${DESKTOP_COMMANDER_VERSION}..."
+        npm --prefix /usr/local install -g "@wonderwhy-er/desktop-commander@${DESKTOP_COMMANDER_VERSION}"
+    fi
+    DESKTOP_COMMANDER_PATH=/usr/local/bin/desktop-commander
+    if [ ! -x "$DESKTOP_COMMANDER_PATH" ]; then
+        print_error "Desktop-Commander-Binary nach Installation nicht gefunden: $DESKTOP_COMMANDER_PATH"
+        return 1
+    fi
+    update_config_var "DESKTOP_COMMANDER_PATH" "$DESKTOP_COMMANDER_PATH" "$CONFIG_FILE"
+    print_success "Desktop Commander ${DESKTOP_COMMANDER_VERSION} unter $DESKTOP_COMMANDER_PATH installiert."
+
+    if ! getent group "$REMOTE_GROUP" >/dev/null; then
+        groupadd --system "$REMOTE_GROUP"
+    fi
+    if [ -L "$DESKTOP_COMMANDER_HOME" ]; then
+        print_error "Desktop-Commander-Home darf kein Symlink sein: $DESKTOP_COMMANDER_HOME"
+        return 1
+    fi
+    if ! id -u "$DESKTOP_COMMANDER_USER" >/dev/null 2>&1; then
+        useradd --system --create-home --home-dir "$DESKTOP_COMMANDER_HOME" \
+            --shell /bin/bash --gid "$REMOTE_GROUP" "$DESKTOP_COMMANDER_USER"
+    else
+        account_home="$(getent passwd "$DESKTOP_COMMANDER_USER" | cut -d: -f6)"
+        if [ "$account_home" != "$DESKTOP_COMMANDER_HOME" ]; then
+            print_error "Bestehender Benutzer $DESKTOP_COMMANDER_USER hat ein anderes Home: $account_home"
+            return 1
+        fi
+        usermod -aG "$REMOTE_GROUP" "$DESKTOP_COMMANDER_USER"
+    fi
+    install -d -m 700 -o "$DESKTOP_COMMANDER_USER" -g "$REMOTE_GROUP" "$DESKTOP_COMMANDER_HOME"
+    chown -R "$DESKTOP_COMMANDER_USER:$REMOTE_GROUP" "$DESKTOP_COMMANDER_HOME"
+    node_major="$(runuser -u "$DESKTOP_COMMANDER_USER" -- env PATH=/usr/local/bin:/usr/bin:/bin node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/')"
+    if [[ ! "$node_major" =~ ^[0-9]+$ ]] || [ "$node_major" -lt 18 ]; then
+        print_error "Node.js >=18 ist für $DESKTOP_COMMANDER_USER nicht verfügbar. Installiere Node.js systemweit."
+        return 1
+    fi
+
+    # Give the service account access to existing projects and future files.
+    workspace_real="$(readlink -f "$WORKSPACE_DIR")"
+    case "$workspace_real" in
+        /|/etc|/etc/*|/root|/root/*|/usr|/usr/*|/var|/var/*|/home|/opt)
+            print_error "Workspace-Pfad ist zu breit für eine rekursive Rechteänderung: $WORKSPACE_DIR"
+            return 1 ;;
+    esac
+    chgrp -R "$REMOTE_GROUP" "$WORKSPACE_DIR"
+    chmod -R g+rwX "$WORKSPACE_DIR"
+    find "$WORKSPACE_DIR" -type d -exec chmod g+s {} +
+    if ! runuser -u "$DESKTOP_COMMANDER_USER" -- test -w "$WORKSPACE_DIR"; then
+        print_error "$DESKTOP_COMMANDER_USER kann $WORKSPACE_DIR nicht erreichen oder beschreiben. Prüfe die übergeordneten Verzeichnisse."
+        return 1
+    fi
+    print_success "$DESKTOP_COMMANDER_USER kann im Workspace arbeiten."
+
+    DESKTOP_COMMANDER_NEEDS_PAIRING=false
+    if [ ! -s "$DESKTOP_COMMANDER_HOME/.desktop-commander-device/device.json" ]; then
+        DESKTOP_COMMANDER_NEEDS_PAIRING=true
+        if [ "$INTERACTIVE" != "true" ]; then
+            print_error "Device-Pairing fehlt. Starte sudo prodstart im Terminal."
+            return 1
+        fi
+    fi
+}
+
 # Helper to update variables in the config file
 update_config_var() {
     local key="$1"
@@ -229,8 +346,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
         if [ -f "$SCRIPT_DIR/config.env" ]; then
             cp "$SCRIPT_DIR/config.env" "$CONFIG_FILE"
             echo "[+] Copied local config.env to $CONFIG_FILE"
-        elif [ -f "$SCRIPT_DIR/config.env.example" ]; then
-            cp "$SCRIPT_DIR/config.env.example" "$CONFIG_FILE"
+        elif [ -f "$SCRIPT_DIR/../config.env.example" ]; then
+            cp "$SCRIPT_DIR/../config.env.example" "$CONFIG_FILE"
             echo "[+] Initialized new config template at $CONFIG_FILE"
             chmod 600 "$CONFIG_FILE"
         else
@@ -250,8 +367,13 @@ chmod 600 "$CONFIG_FILE"
 # Apply defaults if variables are missing
 RUN_CLAUDE="${RUN_CLAUDE:-true}"
 RUN_CODEX="${RUN_CODEX:-false}"
+RUN_DESKTOP_COMMANDER="${RUN_DESKTOP_COMMANDER:-false}"
 CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
 CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
+DESKTOP_COMMANDER_PATH="${DESKTOP_COMMANDER_PATH:-/usr/local/bin/desktop-commander}"
+DESKTOP_COMMANDER_VERSION="${DESKTOP_COMMANDER_VERSION:-0.2.51}"
+DESKTOP_COMMANDER_USER="${DESKTOP_COMMANDER_USER:-patigon-remote}"
+DESKTOP_COMMANDER_HOME="${DESKTOP_COMMANDER_HOME:-/var/lib/patigon-remotemanagement}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/ai-workspace}"
 CODEX_AUTH_TYPE="${CODEX_AUTH_TYPE:-subscription}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
@@ -264,7 +386,7 @@ fi
 
 # 4. Interactive Configuration Wizard
 if [ "$INTERACTIVE" = "true" ]; then
-    print_header "Claude Code & Codex Configuration Wizard"
+    print_header "Remote-Dienste konfigurieren"
     
     # Check actual systemd service status
     CLAUDE_SERVICE_RUNNING=false
@@ -274,6 +396,10 @@ if [ "$INTERACTIVE" = "true" ]; then
     CODEX_SERVICE_RUNNING=false
     if systemctl is-active --quiet codex-remote 2>/dev/null; then
         CODEX_SERVICE_RUNNING=true
+    fi
+    DESKTOP_COMMANDER_SERVICE_RUNNING=false
+    if systemctl is-active --quiet desktop-commander-remote 2>/dev/null; then
+        DESKTOP_COMMANDER_SERVICE_RUNNING=true
     fi
 
     claude_status="${RED}inaktiv${NC}"
@@ -290,32 +416,45 @@ if [ "$INTERACTIVE" = "true" ]; then
         codex_status="${BYELLOW}inaktiv (aktiviert in Konfig)${NC}"
     fi
 
+    desktop_commander_status="${RED}inaktiv${NC}"
+    if [ "$DESKTOP_COMMANDER_SERVICE_RUNNING" = "true" ]; then
+        desktop_commander_status="${BGREEN}aktiv (läuft)${NC}"
+    elif [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
+        desktop_commander_status="${BYELLOW}inaktiv (aktiviert in Konfig)${NC}"
+    fi
+
     print_step "1" "Dienste auswählen"
     echo -e "Welche Remote-Control Dienste möchtest du konfigurieren und aktivieren?"
     echo ""
     echo -e "  ${BCYAN}[1]${NC} Claude Code    (Aktuell: ${claude_status})"
     echo -e "  ${BCYAN}[2]${NC} OpenAI Codex  (Aktuell: ${codex_status})"
-    echo -e "  ${BCYAN}[3]${NC} Beide aktivieren"
+    echo -e "  ${BCYAN}[3]${NC} Desktop Commander / ChatGPT (Aktuell: ${desktop_commander_status})"
     echo ""
-    read -rp "Auswahl [1-3, Leerlassen für aktuelle Werte]: " SERVICE_CHOICE
-
-    case "$SERVICE_CHOICE" in
-        1)
+    while true; do
+        read -rp "Auswahl [z.B. 1,3 | all | Enter = aktuelle Werte]: " SERVICE_CHOICE
+        SERVICE_CHOICE="${SERVICE_CHOICE//[[:space:]]/}"
+        [ -z "$SERVICE_CHOICE" ] && break
+        if [ "$SERVICE_CHOICE" = "all" ]; then
             RUN_CLAUDE=true
-            RUN_CODEX=false
-            ;;
-        2)
+            RUN_CODEX=true
+            RUN_DESKTOP_COMMANDER=true
+            break
+        fi
+        if [[ "$SERVICE_CHOICE" =~ ^[123](,[123])*$ ]]; then
             RUN_CLAUDE=false
-            RUN_CODEX=true
-            ;;
-        3)
-            RUN_CLAUDE=true
-            RUN_CODEX=true
-            ;;
-    esac
+            RUN_CODEX=false
+            RUN_DESKTOP_COMMANDER=false
+            [[ ",$SERVICE_CHOICE," == *,1,* ]] && RUN_CLAUDE=true
+            [[ ",$SERVICE_CHOICE," == *,2,* ]] && RUN_CODEX=true
+            [[ ",$SERVICE_CHOICE," == *,3,* ]] && RUN_DESKTOP_COMMANDER=true
+            break
+        fi
+        print_warning "Ungültige Auswahl. Bitte 1, 2, 3, Kombinationen oder all eingeben."
+    done
 
     update_config_var "RUN_CLAUDE" "$RUN_CLAUDE" "$CONFIG_FILE"
     update_config_var "RUN_CODEX" "$RUN_CODEX" "$CONFIG_FILE"
+    update_config_var "RUN_DESKTOP_COMMANDER" "$RUN_DESKTOP_COMMANDER" "$CONFIG_FILE"
 
     print_step "2" "Workspace einrichten"
     echo -e "Bitte lege das Arbeitsverzeichnis für die KI fest:"
@@ -493,8 +632,13 @@ fi
 
 RUN_CLAUDE="${RUN_CLAUDE:-true}"
 RUN_CODEX="${RUN_CODEX:-false}"
+RUN_DESKTOP_COMMANDER="${RUN_DESKTOP_COMMANDER:-false}"
 CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
 CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
+DESKTOP_COMMANDER_PATH="${DESKTOP_COMMANDER_PATH:-/usr/local/bin/desktop-commander}"
+DESKTOP_COMMANDER_VERSION="${DESKTOP_COMMANDER_VERSION:-0.2.51}"
+DESKTOP_COMMANDER_USER="${DESKTOP_COMMANDER_USER:-patigon-remote}"
+DESKTOP_COMMANDER_HOME="${DESKTOP_COMMANDER_HOME:-/var/lib/patigon-remotemanagement}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/ai-workspace}"
 CODEX_AUTH_TYPE="${CODEX_AUTH_TYPE:-subscription}"
 
@@ -502,10 +646,17 @@ print_step "5" "Dienste konfigurieren & starten"
 echo -e "  Workspace: ${BLUE}$WORKSPACE_DIR${NC}"
 echo -e "  Claude:    $([ "$RUN_CLAUDE" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$CLAUDE_PATH${NC})" || echo -e "${RED}inaktiv${NC}")"
 echo -e "  Codex:     $([ "$RUN_CODEX" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$CODEX_PATH${NC}, Auth: $CODEX_AUTH_TYPE)" || echo -e "${RED}inaktiv${NC}")"
+echo -e "  Desktop Commander: $([ "$RUN_DESKTOP_COMMANDER" = "true" ] && echo -e "${GREEN}aktiv${NC} (${CYAN}$DESKTOP_COMMANDER_PATH${NC}, Version: $DESKTOP_COMMANDER_VERSION)" || echo -e "${RED}inaktiv${NC}")"
 echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
 
 # 5. Ensure workspace directory exists
 mkdir -p "$WORKSPACE_DIR"
+REMOTE_GROUP_UNIT=""
+if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
+    print_step "5a" "Desktop Commander vorbereiten"
+    prepare_desktop_commander
+    REMOTE_GROUP_UNIT=$'Group=ai-remote\nUMask=0002'
+fi
 
 # 6. Install scripts globally for easy management
 if [ "$SCRIPT_DIR" != "/usr/local/bin" ]; then
@@ -546,6 +697,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+${REMOTE_GROUP_UNIT}
 WorkingDirectory=${WORKSPACE_DIR}
 Environment=HOME=/root
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -609,6 +761,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+${REMOTE_GROUP_UNIT}
 WorkingDirectory=${WORKSPACE_DIR}
 Environment=HOME=/root
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -652,9 +805,70 @@ else
     remove_codex_cleanup_automation
 fi
 
-# 9. Verify Status
+# 9. Desktop Commander Remote Device Service
+if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
+    print_info "Generiere $DESKTOP_COMMANDER_SERVICE..."
+    cat > "$DESKTOP_COMMANDER_SERVICE" <<EOF
+[Unit]
+Description=Desktop Commander Remote Device
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${DESKTOP_COMMANDER_USER}
+Group=${REMOTE_GROUP}
+WorkingDirectory=${WORKSPACE_DIR}
+Environment=HOME=${DESKTOP_COMMANDER_HOME}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+UMask=0002
+ExecStart=${DESKTOP_COMMANDER_PATH} remote
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 644 "$DESKTOP_COMMANDER_SERVICE"
+    systemctl daemon-reload
+    systemctl enable desktop-commander-remote.service
+    systemctl restart desktop-commander-remote.service
+    print_success "Desktop Commander Remote gestartet und aktiviert."
+
+    if [ "$DESKTOP_COMMANDER_NEEDS_PAIRING" = "true" ]; then
+        print_step "6" "Desktop Commander mit deinem Konto koppeln"
+        print_info "Der Dienst läuft bereits als $DESKTOP_COMMANDER_USER mit HOME=$DESKTOP_COMMANDER_HOME."
+        print_info "Öffne den Verifizierungslink und bestätige den Code aus den Logs:"
+        journalctl -u desktop-commander-remote.service -n 50 --no-pager || true
+        echo ""
+        print_info "Falls der Code noch nicht erscheint: journalctl -u desktop-commander-remote -f"
+        read -rp "Nach erfolgreicher Gerätefreigabe [ENTER] drücken: " _
+        if [ ! -s "$DESKTOP_COMMANDER_HOME/.desktop-commander-device/device.json" ]; then
+            print_error "Pairing wurde nicht gespeichert. Prüfe die Dienst-Logs und starte prodstart erneut."
+            exit 1
+        fi
+        print_success "Device-Credentials gespeichert."
+    fi
+else
+    if systemctl is-active --quiet desktop-commander-remote 2>/dev/null; then
+        systemctl stop desktop-commander-remote
+    fi
+    if systemctl is-enabled --quiet desktop-commander-remote 2>/dev/null; then
+        systemctl disable desktop-commander-remote
+    fi
+    if [ -f "$DESKTOP_COMMANDER_SERVICE" ]; then
+        rm -f "$DESKTOP_COMMANDER_SERVICE"
+        systemctl daemon-reload
+        print_info "desktop-commander-remote.service entfernt."
+    fi
+fi
+
+# 10. Verify Status
 echo ""
 print_header "Dienst-Status Übersicht"
+SERVICE_FAILURE=false
 
 if [ "$RUN_CLAUDE" = "true" ]; then
     echo -n "  claude-remote: "
@@ -662,6 +876,7 @@ if [ "$RUN_CLAUDE" = "true" ]; then
         echo -e "${BGREEN}aktiv (running)${NC}"
     else
         echo -e "${BRED}inaktiv / fehlerhaft${NC}"
+        SERVICE_FAILURE=true
     fi
 fi
 
@@ -671,11 +886,33 @@ if [ "$RUN_CODEX" = "true" ]; then
         echo -e "${BGREEN}aktiv (running)${NC}"
     else
         echo -e "${BRED}inaktiv / fehlerhaft${NC}"
+        SERVICE_FAILURE=true
     fi
 fi
+if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
+    echo -n "  desktop-commander-remote: "
+    if systemctl is-active --quiet desktop-commander-remote; then
+        echo -e "${BGREEN}aktiv (running)${NC}"
+    else
+        echo -e "${BRED}inaktiv / fehlerhaft${NC}"
+        SERVICE_FAILURE=true
+    fi
+    echo -e "  Workspace: ${BOLD}${WORKSPACE_DIR}${NC}"
+    echo -e "  ChatGPT VPS Access: Desktop Commander / ${DESKTOP_COMMANDER_USER}"
+fi
 echo -e "${DIM}────────────────────────────────────────────────────────────────────────${NC}"
-echo -e "${GREEN}Setup erfolgreich abgeschlossen!${NC}"
+if [ "$SERVICE_FAILURE" = "true" ]; then
+    print_error "Mindestens ein Dienst ist nicht aktiv. Prüfe die Logs."
+    exit 1
+fi
+echo -e "${GREEN}Servereinrichtung abgeschlossen.${NC}"
 echo -e "Logs ansehen:               ${BOLD}journalctl -u <dienst-name> -f${NC}"
+if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
+    echo -e "Desktop-Commander-Logs:     ${BOLD}journalctl -u desktop-commander-remote -f${NC}"
+    echo -e "ChatGPT-End-to-End-Test:    Desktop Commander nutzen und ${BOLD}hostname; whoami; pwd${NC} ausführen."
+    echo -e "Erwartet:                  ${BOLD}${DESKTOP_COMMANDER_USER}${NC} und ${BOLD}${WORKSPACE_DIR}${NC}; danach Repositories auflisten."
+    echo -e "${YELLOW}Das Setup gilt erst nach diesem ChatGPT-Test als vollständig geprüft.${NC}"
+fi
 echo -e "Interaktiv in Dev starten:  ${BOLD}devstart${NC}"
 echo -e "Produktionsdienste stoppen: ${BOLD}prodstop${NC}"
 echo -e "${BCYAN}========================================================================${NC}"

@@ -1,8 +1,8 @@
 # VPS Remote Management Service Control
 
-Dieses Repository enthält Skripte zur einfachen, persistenten Einrichtung und Steuerung von **Claude Code** und **OpenAI Codex** Remote-Control Instanzen.
+Dieses Repository enthält Skripte zur persistenten Einrichtung von **Claude Code**, **OpenAI Codex** und **Desktop Commander für ChatGPT**.
 
-Mit diesen Skripten können beide Dienste über eine zentrale Konfiguration gesteuert, gestartet, gestoppt, lokal entwickelt und bei Bedarf vollständig deinstalliert werden.
+Alle drei Dienste werden über eine zentrale Konfiguration gesteuert, gestartet und gestoppt.
 
 ---
 
@@ -11,11 +11,12 @@ Mit diesen Skripten können beide Dienste über eine zentrale Konfiguration gest
 - **Zentrale Konfiguration**: Steuerung über ein einziges Environment-File.
 - **Secret Auto-Discovery**: Skripte suchen automatisch nach einem Secret-Verzeichnis (z. B. `/secret`, `../secret` oder `../SECRET`) und kopieren vordefinierte Umgebungsvariablen (`env.remotemanagement`, `env.patigon-remotemanagement`), um die Einrichtung zu beschleunigen (analog zu Capential).
 - **Interaktiver VPS-Setup-Assistent**: Bei Ausführung von `prodstart` im Terminal wirst du interaktiv durch die Auswahl der Dienste, Installation fehlender CLI-Tools sowie den Anmeldevorgang geleitet.
-- **Auto-Installation**: Fehlende Binaries für Claude und Codex werden auf Wunsch vollautomatisch heruntergeladen und installiert (npm/curl).
+- **Auto-Installation**: Fehlende Binaries für Claude und Codex werden auf Wunsch installiert. Desktop Commander wird als festgelegte npm-Version unter `/usr/local/bin` installiert.
 - **Login-Verifizierung**: Prüft vor dem Service-Start, ob gültige Anmeldedaten vorhanden sind, und startet bei Bedarf den geführten Login-Vorgang im Terminal.
 - **Lokale Entwicklung (`devstart`)**: Starte Instanzen lokal im Vordergrund des Terminals mit interaktivem Logging und automatischem Cleanup (Ctrl+C). Verwendet das lokale `.env` im Projekt-Root und die Rechte werden automatisch abgesichert (`chmod 600`).
 - **Autostart & Crash-Resistenz (Produktion)**: Automatischer systemd-Neustart nach System-Boot, Netzwerkunterbrechungen oder Abstürzen.
 - **Codex-Release-Retention**: Ein täglicher systemd-Timer entfernt veraltete Codex-Standalone-Releases des verwalteten Dienstbenutzers. Die aktuelle, jede laufende und eine zusätzliche Rollback-Version bleiben erhalten.
+- **Getrennter Desktop-Commander-Benutzer**: Der ChatGPT-Zugang läuft als `patigon-remote` mit Zugriff auf den gemeinsamen Workspace über die Gruppe `ai-remote`.
 - **Bequeme Verwaltung**: Globale Befehle `prodstart`, `prodstop` und `devstart` direkt im Terminal.
 
 ---
@@ -24,7 +25,8 @@ Mit diesen Skripten können beide Dienste über eine zentrale Konfiguration gest
 
 ### 1. Berechtigungen
 - **VPS (Produktion)**: Das Skript `prodstart.sh` benötigt Root-Rechte (`sudo`), um systemd-Units zu registrieren und globale Befehle zu hinterlegen.
-- **Lokale Entwicklung**: `devstart.sh` kann ohne Root-Rechte als normaler Benutzer ausgeführt werden.
+- **Lokale Entwicklung**: `devstart.sh` wird als normaler Benutzer ohne `sudo` ausgeführt.
+- **Desktop Commander**: Node.js 18 oder neuer und npm werden benötigt. Fehlt Node.js, bietet der Wizard die Installation über `apt-get` oder `dnf` an; die installierte Version wird danach geprüft.
 
 ---
 
@@ -33,28 +35,38 @@ Mit diesen Skripten können beide Dienste über eine zentrale Konfiguration gest
 1. Klonen oder kopiere die Skripte auf deinen VPS.
 2. Starte das Setup:
    ```bash
-   sudo ./prodstart.sh
+   sudo ./scripts/prodstart.sh
    ```
 3. **Setup-Wizard**:
-   - Wähle, welche Dienste aktiviert werden sollen (Claude, Codex oder beide).
+   - Wähle Dienste mit `1`, `2`, `3`, einer Kombination wie `1,3` oder `all`. Enter übernimmt die vorhandene Auswahl.
    - Gib dein gewünschtes Workspace-Verzeichnis an.
    - **Auto-Install**: Falls Claude oder Codex fehlen, fragt das Skript, ob sie automatisch installiert werden sollen.
    - **Geführter Login**: Das Skript prüft deine Zugangsdaten. Falls du noch nicht eingeloggt bist, wird eine interaktive CLI-Sitzung gestartet, über die du dich per Web/QR-Code einloggen kannst.
    - **API-Key Abfrage**: Falls Codex mit einem API-Key verwendet werden soll, wirst du zur Eingabe aufgefordert, falls noch kein Schlüssel in der Konfiguration vorhanden ist.
+   - **Desktop Commander**: Der Wizard installiert die festgelegte Version, erstellt `patigon-remote`, richtet die Workspace-Gruppe und die systemd-Unit ein. Beim ersten Start zeigt er den Pairing-Code aus `journalctl`; bestätige den Code im Browser und drücke danach Enter.
+
+### ChatGPT verbinden und prüfen
+
+Installiere einmalig den Remote-Desktop-Commander-Connector in ChatGPT und melde dich mit demselben Desktop-Commander-Konto an, mit dem die VPS gekoppelt wurde. Der Connector verwendet `https://mcp.desktopcommander.app/mcp`. Die [offizielle Remote-Setup-Anleitung](https://github.com/desktop-commander/remote-desktop-commander/blob/main/docs/SETUP.md) beschreibt die ChatGPT-Verbindung und Gerätefreigabe.
+
+Teste danach in ChatGPT mit Desktop Commander `hostname`, `whoami` und `pwd`. Erwartet werden der VPS-Hostname, `patigon-remote` und das konfigurierte `WORKSPACE_DIR`. Lasse anschließend die Repositories im Workspace auflisten. Erst dieser echte Dateisystem- und Terminaltest bestätigt den Zugriff; ein aktiver systemd-Dienst allein reicht dafür nicht.
+
+Desktop Commander erhält Gruppenrechte auf vorhandene Dateien im Workspace. `prodstart` setzt dazu rekursiv `ai-remote`, Schreibrechte für die Gruppe und das Setgid-Bit auf Verzeichnissen. Prüfe vor dem Start, dass `WORKSPACE_DIR` tatsächlich nur Projekte enthält, die ChatGPT bearbeiten darf. Claude und Codex laufen weiterhin als `root`; bei aktivem Desktop Commander erzeugen ihre Units Workspace-Dateien ebenfalls mit der Gruppe `ai-remote`.
 
 ---
 
 ## Lokale Entwicklung (Local Dev)
 
 Für die lokale Entwicklung auf deinem Entwickler-Rechner (z. B. macOS oder Linux) nutzt du das lokale `.env` File im Projektverzeichnis.
+Setze darin `WORKSPACE_DIR` auf ein Verzeichnis, das dein normaler Benutzer beschreiben kann (z. B. dein Projektverzeichnis); der VPS-Standard `/opt/ai-workspace` ist lokal möglicherweise nicht beschreibbar.
 
 1. Führe das Skript im Projektverzeichnis aus:
    ```bash
-   ./devstart.sh
+   ./scripts/devstart.sh
    ```
    *Hinweis: Wenn keine lokale `.env` existiert, sucht das Skript in den übergeordneten Ordnern nach einem `secret/`-Verzeichnis (z. B. `../secret/env.remotemanagement`) und kopiert es automatisch.*
 
-2. Das Skript lädt die lokale `.env`, sucht nach `claude` und `codex` in deinem lokalen `$PATH` (um VPS-Pfade zu überschreiben) und startet beide Remote-Control-Prozesse interaktiv im Hintergrund deines Terminals.
+2. Das Skript lädt die lokale `.env`, findet die aktivierten Binaries im lokalen `$PATH` und startet sie im Hintergrund des Terminals. Desktop Commander nutzt dabei deinen lokalen Benutzer und dessen gespeicherte Gerätefreigabe.
 
 3. **Beenden**: Drücke einfach `[Ctrl+C]` im Terminal. Alle gestarteten Prozesse werden sofort sauber beendet.
 
@@ -80,11 +92,13 @@ sudo prodstop
 devstart
 ```
 
-### Vollständige Deinstallation
-Stoppt alle Dienste, entfernt die Konfigurationen sowie die globalen Befehle restlos vom System:
+### Deinstallation mit optionaler Gerätebereinigung
+`prodstop` stoppt und deaktiviert die Units, behält aber die Dienst-Auswahl und Desktop-Commander-Gerätefreigabe. `prodstart` startet die ausgewählten Dienste später erneut. `--purge` entfernt zusätzlich die bisher verwalteten CLI-Tools und fragt bei interaktiver Ausführung separat, ob die Desktop-Commander-Installation, lokale Device-Credentials und der Service-User entfernt werden sollen:
 ```bash
 sudo prodstop --purge
 ```
+
+Eine Cloud-seitige Gerätefreigabe wird im Desktop-Commander-Dashboard separat widerrufen.
 
 ---
 
@@ -96,9 +110,14 @@ Die Datei wird unter `/etc/claude-remote/config.env` (Produktion) oder im Projek
 |---|---|---|
 | `RUN_CLAUDE` | `true`/`false` - Aktiviert den Claude Code Remote-Control Dienst. | `true` |
 | `RUN_CODEX` | `true`/`false` - Aktiviert den Codex Remote-Control Dienst. | `false` |
+| `RUN_DESKTOP_COMMANDER` | Aktiviert Desktop Commander für ChatGPT. | `false` |
 | `WORKSPACE_DIR` | Das Verzeichnis, aus dem die Remote-Sitzung gestartet wird. | `/opt/ai-workspace` |
 | `CLAUDE_PATH` | Pfad zur Claude CLI (VPS-Standard). | `/root/.local/bin/claude` |
 | `CODEX_PATH` | Pfad zur Codex CLI (VPS-Standard). | `/usr/local/bin/codex` |
+| `DESKTOP_COMMANDER_PATH` | Pfad zur Desktop-Commander-CLI; Produktion installiert sie unter `/usr/local/bin`. | `/usr/local/bin/desktop-commander` |
+| `DESKTOP_COMMANDER_VERSION` | Fest installierte npm-Version. | `0.2.51` |
+| `DESKTOP_COMMANDER_USER` | Systembenutzer für den Remote-Device-Dienst. | `patigon-remote` |
+| `DESKTOP_COMMANDER_HOME` | Home und Speicherort der Device-Credentials. | `/var/lib/patigon-remotemanagement` |
 | `CODEX_AUTH_TYPE` | Authentifizierung für Codex: `subscription` (Abo) oder `api_key`. | `subscription` |
 | `OPENAI_API_KEY` | Der OpenAI API-Key (nur bei `CODEX_AUTH_TYPE=api_key`). | `your_openai_api_key_here` |
 
@@ -110,12 +129,14 @@ Die Datei wird unter `/etc/claude-remote/config.env` (Produktion) oder im Projek
 ```bash
 sudo journalctl -u claude-remote -f
 sudo journalctl -u codex-remote -f
+sudo journalctl -u desktop-commander-remote -f
 ```
 
 ### Status der Dienste prüfen (VPS)
 ```bash
 sudo systemctl status claude-remote
 sudo systemctl status codex-remote
+sudo systemctl status desktop-commander-remote
 sudo systemctl status codex-release-cleanup.timer
 ```
 

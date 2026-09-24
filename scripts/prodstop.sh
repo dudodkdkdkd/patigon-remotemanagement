@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==============================================================================
-# Claude Code & Codex Remote Services Stop and Cleanup Script (prodstop)
+# Claude Code, Codex & Desktop Commander Remote Services Stop Script (prodstop)
 # ==============================================================================
 # Stops and disables the systemd services, and removes service files.
 # If called with --purge or --uninstall, cleans up all configuration and scripts.
@@ -61,27 +61,6 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Helper to update variables in the config file
-update_config_var() {
-    local key="$1"
-    local value="$2"
-    local file="$3"
-    
-    # Escape special characters for sed replacement
-    local escaped_val
-    escaped_val=$(echo "$value" | sed 's/[\/&]/\\&/g')
-    
-    if grep -q "^${key}=" "$file" 2>/dev/null; then
-        if sed --version >/dev/null 2>&1; then
-            sed -i "s/^${key}=.*/${key}=\"${escaped_val}\"/" "$file"
-        else
-            sed -i "" "s/^${key}=.*/${key}=\"${escaped_val}\"/" "$file"
-        fi
-    else
-        echo "${key}=\"${value}\"" >> "$file"
-    fi
-}
-
 # Check if script is running in an interactive terminal session
 INTERACTIVE=false
 if [ -t 0 ]; then
@@ -102,11 +81,29 @@ STOP_SERVICES=true
 REMOVE_GLOBAL_COMMANDS=false
 REMOVE_CONFIG=false
 UNINSTALL_CLI_TOOLS=false
+REMOVE_DESKTOP_COMMANDER_INSTALL=false
+REMOVE_DESKTOP_COMMANDER_CREDENTIALS=false
+REMOVE_DESKTOP_COMMANDER_USER=false
+
+DESKTOP_COMMANDER_USER=patigon-remote
+DESKTOP_COMMANDER_HOME=/var/lib/patigon-remotemanagement
+if [ -f /etc/claude-remote/config.env ]; then
+    # shellcheck disable=SC1091
+    . /etc/claude-remote/config.env
+fi
 
 if [ "$PURGE" = "true" ]; then
     REMOVE_GLOBAL_COMMANDS=true
     REMOVE_CONFIG=true
     UNINSTALL_CLI_TOOLS=true
+    if [ "$INTERACTIVE" = "true" ]; then
+        read -rp "Desktop-Commander-Installation entfernen? [y/N]: " CHOICE_DC_INSTALL
+        [[ "$CHOICE_DC_INSTALL" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_INSTALL=true
+        read -rp "Lokale Desktop-Commander-Device-Credentials entfernen? [y/N]: " CHOICE_DC_CREDENTIALS
+        [[ "$CHOICE_DC_CREDENTIALS" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_CREDENTIALS=true
+        read -rp "Service-User $DESKTOP_COMMANDER_USER entfernen? [y/N]: " CHOICE_DC_USER
+        [[ "$CHOICE_DC_USER" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_USER=true
+    fi
 elif [ "$INTERACTIVE" = "true" ]; then
     print_header "Deinstallations-Assistent"
     echo -e "Bitte entscheide der Reihe nach, was deinstalliert/entfernt werden soll:"
@@ -167,6 +164,19 @@ if [ "$STOP_SERVICES" = "true" ]; then
         print_success "/etc/systemd/system/codex-remote.service entfernt."
     fi
 
+    if systemctl is-active --quiet desktop-commander-remote 2>/dev/null || systemctl is-failed --quiet desktop-commander-remote 2>/dev/null; then
+        systemctl stop desktop-commander-remote || true
+        print_success "Desktop-Commander-Dienst gestoppt."
+    fi
+    if systemctl is-enabled --quiet desktop-commander-remote 2>/dev/null; then
+        systemctl disable desktop-commander-remote || true
+        print_success "Desktop-Commander-Dienst deaktiviert."
+    fi
+    if [ -f /etc/systemd/system/desktop-commander-remote.service ]; then
+        rm -f /etc/systemd/system/desktop-commander-remote.service
+        print_success "/etc/systemd/system/desktop-commander-remote.service entfernt."
+    fi
+
     if systemctl is-enabled --quiet codex-release-cleanup.timer 2>/dev/null; then
         systemctl disable --now codex-release-cleanup.timer || true
         print_success "Codex-Release-Cleanup-Timer deaktiviert."
@@ -185,13 +195,37 @@ if [ "$STOP_SERVICES" = "true" ]; then
     systemctl reset-failed 2>/dev/null || true
     print_success "Dienste erfolgreich gestoppt und Systemd-Definitionen entfernt."
 
-    # Reset configuration to false so they show up as inaktiv next time (if config folder is NOT removed)
-    if [ "$REMOVE_CONFIG" = "false" ]; then
-        CONFIG_FILE="/etc/claude-remote/config.env"
-        if [ -f "$CONFIG_FILE" ]; then
-            update_config_var "RUN_CLAUDE" "false" "$CONFIG_FILE"
-            update_config_var "RUN_CODEX" "false" "$CONFIG_FILE"
-            print_success "Dienst-Konfigurationen in $CONFIG_FILE auf inaktiv (false) zurückgesetzt."
+    print_info "Die Dienst-Auswahl in config.env bleibt für den nächsten prodstart erhalten."
+fi
+
+if [ "$PURGE" = "true" ]; then
+    if [ "$REMOVE_DESKTOP_COMMANDER_INSTALL" = "true" ]; then
+        if command -v npm >/dev/null 2>&1; then
+            npm --prefix /usr/local uninstall -g @wonderwhy-er/desktop-commander
+            print_success "Desktop Commander deinstalliert."
+        else
+            print_warning "npm fehlt; Desktop Commander konnte nicht deinstalliert werden."
+        fi
+    fi
+    if [ "$REMOVE_DESKTOP_COMMANDER_CREDENTIALS" = "true" ]; then
+        if [[ "$DESKTOP_COMMANDER_HOME" =~ ^/var/lib/[a-zA-Z0-9._/-]+$ ]] &&
+           [[ "$DESKTOP_COMMANDER_HOME" != *"/../"* ]] &&
+           [[ "$DESKTOP_COMMANDER_HOME" != *"/.." ]] &&
+           [[ "$DESKTOP_COMMANDER_HOME" = "$(readlink -m "$DESKTOP_COMMANDER_HOME")" ]]; then
+            rm -rf "$DESKTOP_COMMANDER_HOME/.desktop-commander-device"
+            print_success "Lokale Desktop-Commander-Device-Credentials entfernt."
+        else
+            print_error "Unsicherer Desktop-Commander-Home-Pfad; Credentials nicht entfernt."
+        fi
+    fi
+    if [ "$REMOVE_DESKTOP_COMMANDER_USER" = "true" ] && id -u "$DESKTOP_COMMANDER_USER" >/dev/null 2>&1; then
+        if [[ "$DESKTOP_COMMANDER_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] &&
+           [ "$DESKTOP_COMMANDER_USER" != root ] &&
+           [ "$(getent passwd "$DESKTOP_COMMANDER_USER" | cut -d: -f6)" = "$DESKTOP_COMMANDER_HOME" ]; then
+            userdel "$DESKTOP_COMMANDER_USER"
+            print_success "Service-User $DESKTOP_COMMANDER_USER entfernt (Home-Verzeichnis bleibt erhalten)."
+        else
+            print_error "Service-User/Home stimmen nicht mit der Konfiguration überein; Benutzer nicht entfernt."
         fi
     fi
 fi
