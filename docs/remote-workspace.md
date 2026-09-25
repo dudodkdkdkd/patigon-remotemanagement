@@ -139,3 +139,29 @@ git push "https://x-access-token:${TOKEN}@github.com/dudodkdkdkd/<github-repo-na
 Der bestehende `origin`-Remote (SSH, genutzt von `patigon` selbst und vom Deploy-Workflow) bleibt dabei komplett unangetastet — kein Risiko für die bestehende CI/Deploy-Pipeline.
 
 **End-to-End getestet (2026-09-25):** Als `patigon-remote` echten Branch auf `patigon-orthonovex` gepusht (siehe Befehl oben), auf GitHub verifiziert, danach Branch lokal und remote wieder gelöscht. Funktioniert.
+
+## Deploy-Status einsehen: GitHub Actions + Docker (read-only)
+
+Der Agent kann nicht nur pushen, sondern auch prüfen, ob der dadurch ausgelöste Deploy tatsächlich erfolgreich war — auf zwei Ebenen, beide bewusst nur lesend:
+
+**1. GitHub-Workflow-Status.** Alle vier PATs haben zusätzlich zu Contents/Pull-Requests noch **`Actions: Read`**. Damit kann der Agent direkt `.../actions/runs` bzw. `.../actions/workflows/<name>/runs` abfragen (derselbe Token, dieselbe `.env`, kein separates Credential):
+```bash
+TOKEN=$(grep -oP '(?<=^AGENT_GITHUB_TOKEN=).*' <pfad-zur-echten-.env>)
+curl -s -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/dudodkdkdkd/<github-repo-name>/actions/runs?per_page=5"
+```
+
+**2. Container-Status.** Der `Actions: Read`-Status sagt nur, ob der Workflow grün war — nicht, ob die Container danach wirklich laufen. Dafür hat `patigon-remote` eine **eng begrenzte, NOPASSWD-sudoers-Regel** für read-only Docker-Befehle: `docker ps` (host-weit, nur Metadaten) und `docker compose -f <bekannte-datei> ps/logs` für genau die Compose-Dateien der vier Projekte. Kein `exec`, `restart`, `up`/`down`, keine beliebigen Container — die `docker`-Gruppe selbst ist praktisch root-äquivalent, das hier existiert explizit, um das zu vermeiden.
+
+**Konfiguriert über `config.env`, nicht hartkodiert im Skript:**
+```bash
+DOCKER_READONLY_COMPOSE_FILES="/home/patigon/capential/docker-compose.yml /home/patigon/omniperc/docker-compose.yml /home/patigon/orthonovex/docker-compose.yml /home/patigon/unissito/unissito-mcp/docker-compose.yml"
+```
+`scripts/prodstart.sh` generiert daraus bei jedem Lauf `/etc/sudoers.d/<DESKTOP_COMMANDER_USER>-docker` neu (validiert per `visudo -c` vor dem Installieren; bei ungültiger Syntax wird nichts installiert, alte Regel bleibt bestehen). Leer lassen = kein Docker-Zugriff (Default). Datei manuell editieren bringt nichts, sie wird bei jedem `prodstart`-Lauf überschrieben — Änderungen gehören in `config.env`.
+
+Verwendung:
+```bash
+sudo docker ps
+sudo docker compose -f /home/patigon/<repo>/docker-compose.yml ps
+sudo docker compose -f /home/patigon/<repo>/docker-compose.yml logs --tail=100
+```
