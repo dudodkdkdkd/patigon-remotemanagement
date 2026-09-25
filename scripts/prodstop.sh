@@ -85,11 +85,23 @@ REMOVE_DESKTOP_COMMANDER_INSTALL=false
 REMOVE_DESKTOP_COMMANDER_CREDENTIALS=false
 REMOVE_DESKTOP_COMMANDER_USER=false
 
+DESKTOP_COMMANDER_ISOLATED_USER=false
 DESKTOP_COMMANDER_USER=patigon-remote
 DESKTOP_COMMANDER_HOME=/var/lib/patigon-remotemanagement
 if [ -f /etc/claude-remote/config.env ]; then
     # shellcheck disable=SC1091
     . /etc/claude-remote/config.env
+fi
+
+# Dynamic model (default): DESKTOP_COMMANDER_USER/HOME are never persisted to
+# config.env by prodstart, so resolve the same way it does - from the user
+# who ran sudo - so credential cleanup below targets the right home.
+if [ "$DESKTOP_COMMANDER_ISOLATED_USER" != "true" ] &&
+   [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] &&
+   id -u "$SUDO_USER" >/dev/null 2>&1; then
+    DESKTOP_COMMANDER_USER="$SUDO_USER"
+    resolved_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    [ -n "$resolved_home" ] && DESKTOP_COMMANDER_HOME="$resolved_home"
 fi
 
 if [ "$PURGE" = "true" ]; then
@@ -101,8 +113,14 @@ if [ "$PURGE" = "true" ]; then
         [[ "$CHOICE_DC_INSTALL" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_INSTALL=true
         read -rp "Lokale Desktop-Commander-Device-Credentials entfernen? [y/N]: " CHOICE_DC_CREDENTIALS
         [[ "$CHOICE_DC_CREDENTIALS" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_CREDENTIALS=true
-        read -rp "Service-User $DESKTOP_COMMANDER_USER entfernen? [y/N]: " CHOICE_DC_USER
-        [[ "$CHOICE_DC_USER" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_USER=true
+        # Only the legacy isolated model has a separate service account to
+        # remove. In the default dynamic-user model DESKTOP_COMMANDER_USER is
+        # the real, currently-logged-in person's own login - never offer or
+        # allow deleting that account here.
+        if [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ]; then
+            read -rp "Service-User $DESKTOP_COMMANDER_USER entfernen? [y/N]: " CHOICE_DC_USER
+            [[ "$CHOICE_DC_USER" =~ ^[Yy]$ ]] && REMOVE_DESKTOP_COMMANDER_USER=true
+        fi
     fi
 elif [ "$INTERACTIVE" = "true" ]; then
     print_header "Deinstallations-Assistent"
@@ -208,19 +226,29 @@ if [ "$PURGE" = "true" ]; then
         fi
     fi
     if [ "$REMOVE_DESKTOP_COMMANDER_CREDENTIALS" = "true" ]; then
-        if [[ "$DESKTOP_COMMANDER_HOME" =~ ^/var/lib/[a-zA-Z0-9._/-]+$ ]] &&
+        # Scoped to the .desktop-commander-device subfolder only, and only
+        # when DESKTOP_COMMANDER_HOME matches that user's actual passwd home
+        # - safe to run against a real person's home directory too.
+        if [ -n "$DESKTOP_COMMANDER_HOME" ] &&
+           [ "$DESKTOP_COMMANDER_HOME" != "/" ] &&
            [[ "$DESKTOP_COMMANDER_HOME" != *"/../"* ]] &&
            [[ "$DESKTOP_COMMANDER_HOME" != *"/.." ]] &&
-           [[ "$DESKTOP_COMMANDER_HOME" = "$(readlink -m "$DESKTOP_COMMANDER_HOME")" ]]; then
+           [ "$DESKTOP_COMMANDER_HOME" = "$(readlink -m "$DESKTOP_COMMANDER_HOME")" ] &&
+           [ "$(getent passwd "$DESKTOP_COMMANDER_USER" 2>/dev/null | cut -d: -f6)" = "$DESKTOP_COMMANDER_HOME" ]; then
             rm -rf "$DESKTOP_COMMANDER_HOME/.desktop-commander-device"
             print_success "Lokale Desktop-Commander-Device-Credentials entfernt."
         else
             print_error "Unsicherer Desktop-Commander-Home-Pfad; Credentials nicht entfernt."
         fi
     fi
-    if [ "$REMOVE_DESKTOP_COMMANDER_USER" = "true" ] && id -u "$DESKTOP_COMMANDER_USER" >/dev/null 2>&1; then
+    if [ "$REMOVE_DESKTOP_COMMANDER_USER" = "true" ] &&
+       [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ] &&
+       id -u "$DESKTOP_COMMANDER_USER" >/dev/null 2>&1; then
+        # Extra hard gate: only ever userdel the dedicated legacy service
+        # account, never the real, dynamically-resolved login user.
         if [[ "$DESKTOP_COMMANDER_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] &&
            [ "$DESKTOP_COMMANDER_USER" != root ] &&
+           [[ "$DESKTOP_COMMANDER_HOME" =~ ^/var/lib/[a-zA-Z0-9._/-]+$ ]] &&
            [ "$(getent passwd "$DESKTOP_COMMANDER_USER" | cut -d: -f6)" = "$DESKTOP_COMMANDER_HOME" ]; then
             userdel "$DESKTOP_COMMANDER_USER"
             print_success "Service-User $DESKTOP_COMMANDER_USER entfernt (Home-Verzeichnis bleibt erhalten)."
@@ -266,6 +294,10 @@ if [ "$REMOVE_GLOBAL_COMMANDS" = "true" ]; then
     if [ -f "/usr/local/bin/devstart" ]; then
         rm -f "/usr/local/bin/devstart"
         print_success "Globaler Befehl entfernt: /usr/local/bin/devstart"
+    fi
+    if [ -f "/usr/local/bin/prodstart-isolated-desktop-commander" ]; then
+        rm -f "/usr/local/bin/prodstart-isolated-desktop-commander"
+        print_success "Globaler Befehl entfernt: /usr/local/bin/prodstart-isolated-desktop-commander"
     fi
 fi
 

@@ -1,5 +1,9 @@
 # Remote-Workspace: welche Repos ChatGPT/Desktop Commander sehen darf
 
+> **Dieses Dokument beschreibt den isolierten Legacy-Modus, nicht mehr den Standard.** Seit der Umstellung auf den dynamischen Benutzer-Modus (`DESKTOP_COMMANDER_ISOLATED_USER=false`, Default) läuft Desktop Commander als der reale Benutzer, der `sudo prodstart` ausgeführt hat — mit dessen eigenem Home-Verzeichnis, ohne separates Service-Konto, ohne `ai-remote`-Gruppe, ohne die unten beschriebene Bind-Mount/Symlink/ACL-Maschinerie. Dieser volle Zugriff (inkl. `secret/`, `.ssh`, alle Projekte im Home) ist in diesem Modus **bewusst gewollt**, nicht eingeschränkt.
+>
+> Alles unten gilt nur, wenn `DESKTOP_COMMANDER_ISOLATED_USER=true` gesetzt ist (z. B. über `scripts/prodstart-isolated-desktop-commander.sh`) — für wer die alte, engere Isolation weiterhin will. Die auf dieser VPS zuletzt verifizierte Live-Konfiguration (Stand 2026-09-25, siehe Tabelle unten) lief noch in diesem Legacy-Modus; ob/wann auf den dynamischen Modus umgestellt wurde, steht nicht in diesem Dokument — vor Änderungen am produktiven `patigon-remote`-Konto den tatsächlichen Stand auf der VPS prüfen (`getent passwd patigon-remote`, `systemctl cat desktop-commander-remote`), nicht diese Tabelle als aktuell annehmen.
+
 Dieses Dokument beschreibt den **Live-Zustand auf der Produktions-VPS** (Zugangsdaten siehe privates `secret`-Repo, nicht hier), der regelt, welche Projekte der Desktop-Commander-Service (`desktop-commander-remote.service`, läuft als `patigon-remote`) lesen und beschreiben kann. Stand: 2026-09-25, verifiziert per SSH.
 
 > **Hinweis:** Dieses Repo (`patigon-remotemanagement`) ist öffentlich. Keine IPs, Hostnames, Tokens oder sonstigen konkreten Zugangsdaten hier eintragen — nur Mechanik/Architektur dokumentieren.

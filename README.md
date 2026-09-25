@@ -16,7 +16,7 @@ Alle drei Dienste werden über eine zentrale Konfiguration gesteuert, gestartet 
 - **Lokale Entwicklung (`devstart`)**: Starte Instanzen lokal im Vordergrund des Terminals mit interaktivem Logging und automatischem Cleanup (Ctrl+C). Verwendet das lokale `.env` im Projekt-Root und die Rechte werden automatisch abgesichert (`chmod 600`).
 - **Autostart & Crash-Resistenz (Produktion)**: Automatischer systemd-Neustart nach System-Boot, Netzwerkunterbrechungen oder Abstürzen.
 - **Codex-Release-Retention**: Ein täglicher systemd-Timer entfernt veraltete Codex-Standalone-Releases des verwalteten Dienstbenutzers. Die aktuelle, jede laufende und eine zusätzliche Rollback-Version bleiben erhalten.
-- **Getrennter Desktop-Commander-Benutzer**: Der ChatGPT-Zugang läuft als `patigon-remote` mit Zugriff auf den gemeinsamen Workspace über die Gruppe `ai-remote`.
+- **Desktop Commander läuft als der installierende Benutzer**: Standardmäßig läuft der ChatGPT-Zugang als genau der Benutzer, der `sudo prodstart` ausgeführt hat (kein separates Service-Konto, keine Workspace-ACL). Wer stattdessen das alte, isolierte Service-Konto (`patigon-remote` + Gruppe `ai-remote` + kuratierte Workspace-ACL) will, ruft `prodstart-isolated-desktop-commander` statt `prodstart` auf.
 - **Bequeme Verwaltung**: Globale Befehle `prodstart`, `prodstop` und `devstart` direkt im Terminal.
 
 ---
@@ -43,17 +43,18 @@ Alle drei Dienste werden über eine zentrale Konfiguration gesteuert, gestartet 
    - **Auto-Install**: Falls Claude oder Codex fehlen, fragt das Skript, ob sie automatisch installiert werden sollen.
    - **Geführter Login**: Das Skript prüft deine Zugangsdaten. Falls du noch nicht eingeloggt bist, wird eine interaktive CLI-Sitzung gestartet, über die du dich per Web/QR-Code einloggen kannst.
    - **API-Key Abfrage**: Falls Codex mit einem API-Key verwendet werden soll, wirst du zur Eingabe aufgefordert, falls noch kein Schlüssel in der Konfiguration vorhanden ist.
-   - **Desktop Commander**: Der Wizard installiert die festgelegte Version, erstellt `patigon-remote`, richtet die Workspace-Gruppe und die systemd-Unit ein. Beim ersten Start zeigt er den Pairing-Code aus `journalctl`; bestätige den Code im Browser und drücke danach Enter.
+   - **Desktop Commander**: Der Wizard installiert die festgelegte Version und richtet die systemd-Unit ein. Standardmäßig läuft der Dienst als der Benutzer, der `sudo prodstart` ausgeführt hat (`$SUDO_USER`) mit dessen echtem Home-Verzeichnis - kein separates Service-Konto. Beim ersten Start zeigt er den Pairing-Code aus `journalctl`; bestätige den Code im Browser und drücke danach Enter.
+   - **Legacy-Modus (isoliertes Service-Konto)**: Für das alte Modell mit dediziertem, eingeschränktem `patigon-remote`-Konto und kuratierter Workspace-ACL (Details in [`docs/remote-workspace.md`](docs/remote-workspace.md)) `sudo ./scripts/prodstart-isolated-desktop-commander.sh` (bzw. global `sudo prodstart-isolated-desktop-commander`) statt `prodstart` ausführen. Das setzt `DESKTOP_COMMANDER_ISOLATED_USER=true` in `config.env` und ruft danach denselben Wizard auf.
 
 ### ChatGPT verbinden und prüfen
 
 Installiere einmalig den Remote-Desktop-Commander-Connector in ChatGPT und melde dich mit demselben Desktop-Commander-Konto an, mit dem die VPS gekoppelt wurde. Der Connector verwendet `https://mcp.desktopcommander.app/mcp`. Die [offizielle Remote-Setup-Anleitung](https://github.com/desktop-commander/remote-desktop-commander/blob/main/docs/SETUP.md) beschreibt die ChatGPT-Verbindung und Gerätefreigabe.
 
-Teste danach in ChatGPT mit Desktop Commander `hostname`, `whoami` und `pwd`. Erwartet werden der VPS-Hostname, `patigon-remote` und das konfigurierte `WORKSPACE_DIR`. Lasse anschließend die Repositories im Workspace auflisten. Erst dieser echte Dateisystem- und Terminaltest bestätigt den Zugriff; ein aktiver systemd-Dienst allein reicht dafür nicht.
+Teste danach in ChatGPT mit Desktop Commander `hostname`, `whoami` und `pwd`. Erwartet werden der VPS-Hostname, der Benutzer, der `sudo prodstart` ausgeführt hat (Standardmodus) bzw. `patigon-remote` (Legacy-Modus), und das konfigurierte `WORKSPACE_DIR`. Lasse anschließend die Repositories im Workspace auflisten. Erst dieser echte Dateisystem- und Terminaltest bestätigt den Zugriff; ein aktiver systemd-Dienst allein reicht dafür nicht.
 
-Desktop Commander erhält Gruppenrechte auf vorhandene Dateien im Workspace. `prodstart` setzt dazu rekursiv `ai-remote`, Schreibrechte für die Gruppe und das Setgid-Bit auf Verzeichnissen. Prüfe vor dem Start, dass `WORKSPACE_DIR` tatsächlich nur Projekte enthält, die ChatGPT bearbeiten darf. Claude und Codex laufen weiterhin als `root`; bei aktivem Desktop Commander erzeugen ihre Units Workspace-Dateien ebenfalls mit der Gruppe `ai-remote`.
+**Standardmodus (dynamischer Benutzer):** Desktop Commander läuft als derselbe reale Login-Benutzer, der `sudo prodstart` ausgeführt hat, mit dessen eigenem Home-Verzeichnis - keine separate Gruppen-ACL, kein kuratierter Workspace nötig, weil der Benutzer ohnehin schon Owner seiner eigenen Dateien ist. Das bedeutet auch: voller Zugriff auf alles, was dieser Benutzer sehen kann, inklusive `secret/`, `.ssh` und anderer Projekte in seinem Home. Claude und Codex laufen weiterhin als `root`.
 
-Auf der Produktions-VPS ist `WORKSPACE_DIR` deshalb kein direkter Projektordner, sondern ein kuratierter Symlink-Ordner über Bind-Mounts einzelner freigegebener Repos, mit `.env`-Dateien gezielt per `chmod`/ACL-Maske gesperrt. Details, aktuelle Freigabeliste und das Runbook zum Hinzufügen/Entziehen eines Repos stehen in [`docs/remote-workspace.md`](docs/remote-workspace.md).
+**Legacy-Modus (isoliertes Service-Konto, opt-in via `prodstart-isolated-desktop-commander`):** Desktop Commander läuft als eigener, eingeschränkter Benutzer `patigon-remote`. Der bekommt Gruppenrechte nur auf `WORKSPACE_DIR` - `prodstart` setzt dazu rekursiv die Gruppe `ai-remote`, Schreibrechte für die Gruppe und das Setgid-Bit auf Verzeichnissen. `WORKSPACE_DIR` ist in diesem Modus auf der Produktions-VPS kein direkter Projektordner, sondern ein kuratierter Symlink-Ordner über Bind-Mounts einzelner freigegebener Repos, mit `.env`-Dateien gezielt per `chmod`/ACL-Maske gesperrt. Details, aktuelle Freigabeliste und das Runbook zum Hinzufügen/Entziehen eines Repos stehen in [`docs/remote-workspace.md`](docs/remote-workspace.md).
 
 ---
 
@@ -118,8 +119,9 @@ Die Datei wird unter `/etc/claude-remote/config.env` (Produktion) oder im Projek
 | `CODEX_PATH` | Pfad zur Codex CLI (VPS-Standard). | `/usr/local/bin/codex` |
 | `DESKTOP_COMMANDER_PATH` | Pfad zur Desktop-Commander-CLI; Produktion installiert sie unter `/usr/local/bin`. | `/usr/local/bin/desktop-commander` |
 | `DESKTOP_COMMANDER_VERSION` | Fest installierte npm-Version. | `0.2.51` |
-| `DESKTOP_COMMANDER_USER` | Systembenutzer für den Remote-Device-Dienst. | `patigon-remote` |
-| `DESKTOP_COMMANDER_HOME` | Home und Speicherort der Device-Credentials. | `/var/lib/patigon-remotemanagement` |
+| `DESKTOP_COMMANDER_ISOLATED_USER` | `false` = dynamischer Modus (Dienst läuft als `$SUDO_USER`, Werte unten werden ignoriert/überschrieben). `true` = Legacy-Modus mit dediziertem Service-Konto. | `false` |
+| `DESKTOP_COMMANDER_USER` | Nur im Legacy-Modus relevant: Systembenutzer für den Remote-Device-Dienst. | `patigon-remote` |
+| `DESKTOP_COMMANDER_HOME` | Nur im Legacy-Modus relevant: Home und Speicherort der Device-Credentials. | `/var/lib/patigon-remotemanagement` |
 | `CODEX_AUTH_TYPE` | Authentifizierung für Codex: `subscription` (Abo) oder `api_key`. | `subscription` |
 | `OPENAI_API_KEY` | Der OpenAI API-Key (nur bei `CODEX_AUTH_TYPE=api_key`). | `your_openai_api_key_here` |
 

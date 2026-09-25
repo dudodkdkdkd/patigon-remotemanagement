@@ -195,11 +195,40 @@ remove_legacy_docker_readonly_sudo() {
 }
 
 prepare_desktop_commander() {
-    local node_major installed_version account_home workspace_real
+    local node_major installed_version account_home workspace_real home_prefix_ok
+
+    if [ "$DESKTOP_COMMANDER_ISOLATED_USER" != "true" ]; then
+        # Dynamic model (default): the service runs as whoever ran
+        # `sudo prodstart`, using their own real home. Always re-resolve from
+        # $SUDO_USER - never trust a stale DESKTOP_COMMANDER_USER/HOME from a
+        # previous run or from another admin's config.env.
+        if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
+            print_error "Kann den installierenden Benutzer nicht bestimmen (SUDO_USER ist leer oder root)."
+            print_error "Bitte 'sudo prodstart' als dein normales Benutzerkonto ausführen (nicht als root direkt eingeloggt)."
+            print_error "Für den alten, isolierten Service-Account stattdessen: scripts/prodstart-isolated-desktop-commander.sh"
+            return 1
+        fi
+        if ! id -u "$SUDO_USER" >/dev/null 2>&1; then
+            print_error "Installierender Benutzer $SUDO_USER existiert nicht (mehr)."
+            return 1
+        fi
+        DESKTOP_COMMANDER_USER="$SUDO_USER"
+        DESKTOP_COMMANDER_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+        if [ -z "$DESKTOP_COMMANDER_HOME" ] || [ ! -d "$DESKTOP_COMMANDER_HOME" ]; then
+            print_error "Konnte das Home-Verzeichnis von $SUDO_USER nicht ermitteln: '$DESKTOP_COMMANDER_HOME'"
+            return 1
+        fi
+    fi
+
+    home_prefix_ok=true
+    if [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ] && [[ ! "$DESKTOP_COMMANDER_HOME" =~ ^/var/lib/[a-zA-Z0-9._/-]+$ ]]; then
+        home_prefix_ok=false
+    fi
 
     if [[ ! "$DESKTOP_COMMANDER_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
        [[ ! "$DESKTOP_COMMANDER_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] ||
-       [[ ! "$DESKTOP_COMMANDER_HOME" =~ ^/var/lib/[a-zA-Z0-9._/-]+$ ]] ||
+       [ "$home_prefix_ok" != "true" ] ||
+       [[ ! "$DESKTOP_COMMANDER_HOME" =~ ^/[a-zA-Z0-9._/-]+$ ]] ||
        [[ "$DESKTOP_COMMANDER_HOME" == *"/../"* ]] ||
        [[ "$DESKTOP_COMMANDER_HOME" == *"/.." ]] ||
        [[ "$DESKTOP_COMMANDER_HOME" != "$(readlink -m "$DESKTOP_COMMANDER_HOME")" ]] ||
@@ -257,42 +286,57 @@ prepare_desktop_commander() {
     update_config_var "DESKTOP_COMMANDER_PATH" "$DESKTOP_COMMANDER_PATH" "$CONFIG_FILE"
     print_success "Desktop Commander ${DESKTOP_COMMANDER_VERSION} unter $DESKTOP_COMMANDER_PATH installiert."
 
-    if ! getent group "$REMOTE_GROUP" >/dev/null; then
-        groupadd --system "$REMOTE_GROUP"
-    fi
-    if [ -L "$DESKTOP_COMMANDER_HOME" ]; then
-        print_error "Desktop-Commander-Home darf kein Symlink sein: $DESKTOP_COMMANDER_HOME"
-        return 1
-    fi
-    if ! id -u "$DESKTOP_COMMANDER_USER" >/dev/null 2>&1; then
-        useradd --system --create-home --home-dir "$DESKTOP_COMMANDER_HOME" \
-            --shell /bin/bash --gid "$REMOTE_GROUP" "$DESKTOP_COMMANDER_USER"
-    else
-        account_home="$(getent passwd "$DESKTOP_COMMANDER_USER" | cut -d: -f6)"
-        if [ "$account_home" != "$DESKTOP_COMMANDER_HOME" ]; then
-            print_error "Bestehender Benutzer $DESKTOP_COMMANDER_USER hat ein anderes Home: $account_home"
+    if [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ]; then
+        # Legacy opt-in model: dedicated, less-privileged service account with
+        # a curated ai-remote-group workspace. See docs/remote-workspace.md.
+        if ! getent group "$REMOTE_GROUP" >/dev/null; then
+            groupadd --system "$REMOTE_GROUP"
+        fi
+        if [ -L "$DESKTOP_COMMANDER_HOME" ]; then
+            print_error "Desktop-Commander-Home darf kein Symlink sein: $DESKTOP_COMMANDER_HOME"
             return 1
         fi
-        usermod -aG "$REMOTE_GROUP" "$DESKTOP_COMMANDER_USER"
+        if ! id -u "$DESKTOP_COMMANDER_USER" >/dev/null 2>&1; then
+            useradd --system --create-home --home-dir "$DESKTOP_COMMANDER_HOME" \
+                --shell /bin/bash --gid "$REMOTE_GROUP" "$DESKTOP_COMMANDER_USER"
+        else
+            account_home="$(getent passwd "$DESKTOP_COMMANDER_USER" | cut -d: -f6)"
+            if [ "$account_home" != "$DESKTOP_COMMANDER_HOME" ]; then
+                print_error "Bestehender Benutzer $DESKTOP_COMMANDER_USER hat ein anderes Home: $account_home"
+                return 1
+            fi
+            usermod -aG "$REMOTE_GROUP" "$DESKTOP_COMMANDER_USER"
+        fi
+        install -d -m 700 -o "$DESKTOP_COMMANDER_USER" -g "$REMOTE_GROUP" "$DESKTOP_COMMANDER_HOME"
+        chown -R "$DESKTOP_COMMANDER_USER:$REMOTE_GROUP" "$DESKTOP_COMMANDER_HOME"
+    else
+        # Dynamic model: DESKTOP_COMMANDER_USER is the pre-existing real login
+        # account that ran `sudo prodstart`. No account to create, no shared
+        # group, no ownership changes - it already owns its own home.
+        if [ -L "$DESKTOP_COMMANDER_HOME" ]; then
+            print_error "Home von $DESKTOP_COMMANDER_USER darf kein Symlink sein: $DESKTOP_COMMANDER_HOME"
+            return 1
+        fi
     fi
-    install -d -m 700 -o "$DESKTOP_COMMANDER_USER" -g "$REMOTE_GROUP" "$DESKTOP_COMMANDER_HOME"
-    chown -R "$DESKTOP_COMMANDER_USER:$REMOTE_GROUP" "$DESKTOP_COMMANDER_HOME"
+
     node_major="$(runuser -u "$DESKTOP_COMMANDER_USER" -- env PATH=/usr/local/bin:/usr/bin:/bin node --version 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/')"
     if [[ ! "$node_major" =~ ^[0-9]+$ ]] || [ "$node_major" -lt 18 ]; then
         print_error "Node.js >=18 ist für $DESKTOP_COMMANDER_USER nicht verfügbar. Installiere Node.js systemweit."
         return 1
     fi
 
-    # Give the service account access to existing projects and future files.
-    workspace_real="$(readlink -f "$WORKSPACE_DIR")"
-    case "$workspace_real" in
-        /|/etc|/etc/*|/root|/root/*|/usr|/usr/*|/var|/var/*|/home|/opt)
-            print_error "Workspace-Pfad ist zu breit für eine rekursive Rechteänderung: $WORKSPACE_DIR"
-            return 1 ;;
-    esac
-    chgrp -R "$REMOTE_GROUP" "$WORKSPACE_DIR"
-    chmod -R g+rwX "$WORKSPACE_DIR"
-    find "$WORKSPACE_DIR" -type d -exec chmod g+s {} +
+    if [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ]; then
+        # Give the service account access to existing projects and future files.
+        workspace_real="$(readlink -f "$WORKSPACE_DIR")"
+        case "$workspace_real" in
+            /|/etc|/etc/*|/root|/root/*|/usr|/usr/*|/var|/var/*|/home|/opt)
+                print_error "Workspace-Pfad ist zu breit für eine rekursive Rechteänderung: $WORKSPACE_DIR"
+                return 1 ;;
+        esac
+        chgrp -R "$REMOTE_GROUP" "$WORKSPACE_DIR"
+        chmod -R g+rwX "$WORKSPACE_DIR"
+        find "$WORKSPACE_DIR" -type d -exec chmod g+s {} +
+    fi
     if ! runuser -u "$DESKTOP_COMMANDER_USER" -- test -w "$WORKSPACE_DIR"; then
         print_error "$DESKTOP_COMMANDER_USER kann $WORKSPACE_DIR nicht erreichen oder beschreiben. Prüfe die übergeordneten Verzeichnisse."
         return 1
@@ -384,6 +428,7 @@ CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
 CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
 DESKTOP_COMMANDER_PATH="${DESKTOP_COMMANDER_PATH:-/usr/local/bin/desktop-commander}"
 DESKTOP_COMMANDER_VERSION="${DESKTOP_COMMANDER_VERSION:-0.2.51}"
+DESKTOP_COMMANDER_ISOLATED_USER="${DESKTOP_COMMANDER_ISOLATED_USER:-false}"
 DESKTOP_COMMANDER_USER="${DESKTOP_COMMANDER_USER:-patigon-remote}"
 DESKTOP_COMMANDER_HOME="${DESKTOP_COMMANDER_HOME:-/var/lib/patigon-remotemanagement}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/ai-workspace}"
@@ -649,6 +694,7 @@ CLAUDE_PATH="${CLAUDE_PATH:-/root/.local/bin/claude}"
 CODEX_PATH="${CODEX_PATH:-/usr/local/bin/codex}"
 DESKTOP_COMMANDER_PATH="${DESKTOP_COMMANDER_PATH:-/usr/local/bin/desktop-commander}"
 DESKTOP_COMMANDER_VERSION="${DESKTOP_COMMANDER_VERSION:-0.2.51}"
+DESKTOP_COMMANDER_ISOLATED_USER="${DESKTOP_COMMANDER_ISOLATED_USER:-false}"
 DESKTOP_COMMANDER_USER="${DESKTOP_COMMANDER_USER:-patigon-remote}"
 DESKTOP_COMMANDER_HOME="${DESKTOP_COMMANDER_HOME:-/var/lib/patigon-remotemanagement}"
 WORKSPACE_DIR="${WORKSPACE_DIR:-/opt/ai-workspace}"
@@ -667,7 +713,12 @@ REMOTE_GROUP_UNIT=""
 if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
     print_step "5a" "Desktop Commander vorbereiten"
     prepare_desktop_commander
-    REMOTE_GROUP_UNIT=$'Group=ai-remote\nUMask=0002'
+    if [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ]; then
+        # Only needed so root-run Claude/Codex leave files the isolated
+        # ai-remote service account can read/write. Irrelevant in the
+        # default dynamic-user model - that account already owns its files.
+        REMOTE_GROUP_UNIT=$'Group=ai-remote\nUMask=0002'
+    fi
 fi
 
 # 6. Install scripts globally for easy management
@@ -689,6 +740,13 @@ if [ "$SCRIPT_DIR" != "/usr/local/bin" ]; then
         cp "$SCRIPT_DIR/devstart.sh" "/usr/local/bin/devstart"
         chmod +x "/usr/local/bin/devstart"
         print_success "Globaler Befehl installiert: /usr/local/bin/devstart"
+    fi
+
+    # Install prodstart-isolated-desktop-commander command (opt-in legacy model)
+    if [ -f "$SCRIPT_DIR/prodstart-isolated-desktop-commander.sh" ]; then
+        cp "$SCRIPT_DIR/prodstart-isolated-desktop-commander.sh" "/usr/local/bin/prodstart-isolated-desktop-commander"
+        chmod +x "/usr/local/bin/prodstart-isolated-desktop-commander"
+        print_success "Globaler Befehl installiert: /usr/local/bin/prodstart-isolated-desktop-commander"
     fi
 fi
 
@@ -830,6 +888,12 @@ if [ "$RUN_DESKTOP_COMMANDER" = "true" ]; then
         # approach unusable. This is the accepted tradeoff.
         DOCKER_SUPPLEMENTARY_GROUP="SupplementaryGroups=docker"
     fi
+    DC_ISOLATED_GROUP_LINE=""
+    DC_ISOLATED_UMASK_LINE=""
+    if [ "$DESKTOP_COMMANDER_ISOLATED_USER" = "true" ]; then
+        DC_ISOLATED_GROUP_LINE="Group=${REMOTE_GROUP}"
+        DC_ISOLATED_UMASK_LINE="UMask=0002"
+    fi
     cat > "$DESKTOP_COMMANDER_SERVICE" <<EOF
 [Unit]
 Description=Desktop Commander Remote Device
@@ -839,12 +903,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=${DESKTOP_COMMANDER_USER}
-Group=${REMOTE_GROUP}
+${DC_ISOLATED_GROUP_LINE}
 ${DOCKER_SUPPLEMENTARY_GROUP}
 WorkingDirectory=${WORKSPACE_DIR}
 Environment=HOME=${DESKTOP_COMMANDER_HOME}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-UMask=0002
+${DC_ISOLATED_UMASK_LINE}
 ExecStart=${DESKTOP_COMMANDER_PATH} remote
 Restart=always
 RestartSec=5
