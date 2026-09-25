@@ -927,10 +927,32 @@ EOF
     if [ "$DESKTOP_COMMANDER_NEEDS_PAIRING" = "true" ]; then
         print_step "6" "Desktop Commander mit deinem Konto koppeln"
         print_info "Der Dienst läuft bereits als $DESKTOP_COMMANDER_USER mit HOME=$DESKTOP_COMMANDER_HOME."
-        print_info "Öffne den Verifizierungslink und bestätige den Code aus den Logs:"
-        journalctl -u desktop-commander-remote.service -n 50 --no-pager || true
-        echo ""
-        print_info "Falls der Code noch nicht erscheint: journalctl -u desktop-commander-remote -f"
+
+        # Poll fresh logs (since this restart) for the actual verification URL
+        # instead of dumping raw journal history - a long-running unit's tail
+        # is mostly unrelated older entries by the time an operator reads it.
+        PAIRING_URL=""
+        for _ in $(seq 1 20); do
+            PAIRING_URL="$(journalctl -u desktop-commander-remote.service --since "-30s" --no-pager 2>/dev/null |
+                grep -oE 'https://mcp\.desktopcommander\.app/device/verify\?user_code=[A-Za-z0-9-]+' | tail -1)"
+            [ -n "$PAIRING_URL" ] && break
+            sleep 1
+        done
+
+        if [ -n "$PAIRING_URL" ]; then
+            PAIRING_CODE="${PAIRING_URL##*user_code=}"
+            echo ""
+            echo -e "${BCYAN}┌──────────────────────────────────────────────────────────────────────┐${NC}"
+            printf "${BCYAN}│${NC}  Link:  ${BWHITE}%-64s${NC}  ${BCYAN}│${NC}\n" "$PAIRING_URL"
+            printf "${BCYAN}│${NC}  Code:  ${BWHITE}%-64s${NC}  ${BCYAN}│${NC}\n" "$PAIRING_CODE"
+            echo -e "${BCYAN}└──────────────────────────────────────────────────────────────────────┘${NC}"
+            echo ""
+        else
+            print_warning "Konnte Pairing-Link nicht automatisch aus den Logs extrahieren. Letzte 50 Zeilen:"
+            journalctl -u desktop-commander-remote.service -n 50 --no-pager || true
+            echo ""
+            print_info "Live-Logs: journalctl -u desktop-commander-remote -f"
+        fi
         read -rp "Nach erfolgreicher Gerätefreigabe [ENTER] drücken: " _
         if [ ! -s "$DESKTOP_COMMANDER_HOME/.desktop-commander-device/device.json" ]; then
             print_error "Pairing wurde nicht gespeichert. Prüfe die Dienst-Logs und starte prodstart erneut."
