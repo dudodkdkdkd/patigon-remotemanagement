@@ -151,17 +151,14 @@ curl -s -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+j
   "https://api.github.com/repos/dudodkdkdkd/<github-repo-name>/actions/runs?per_page=5"
 ```
 
-**2. Container-Status.** Der `Actions: Read`-Status sagt nur, ob der Workflow grün war — nicht, ob die Container danach wirklich laufen. Dafür hat `patigon-remote` eine **eng begrenzte, NOPASSWD-sudoers-Regel** für read-only Docker-Befehle: `docker ps` (host-weit, nur Metadaten) und `docker compose -f <bekannte-datei> ps/logs` für genau die Compose-Dateien der vier Projekte. Kein `exec`, `restart`, `up`/`down`, keine beliebigen Container — die `docker`-Gruppe selbst ist praktisch root-äquivalent, das hier existiert explizit, um das zu vermeiden.
+**2. Container-Status.** Der `Actions: Read`-Status sagt nur, ob der Workflow grün war — nicht, ob die Container danach wirklich laufen. Dafür ist `patigon-remote` seit 2026-09-25 Mitglied der **`docker`-Gruppe** (via `SupplementaryGroups=docker` auf `desktop-commander-remote.service`, automatisch von `prodstart.sh` gesetzt, wenn eine `docker`-Gruppe auf dem Host existiert — keine `config.env`-Variable nötig).
 
-**Konfiguriert über `config.env`, nicht hartkodiert im Skript:**
-```bash
-DOCKER_READONLY_COMPOSE_FILES="/home/patigon/capential/docker-compose.yml /home/patigon/omniperc/docker-compose.yml /home/patigon/orthonovex/docker-compose.yml /home/patigon/unissito/unissito-mcp/docker-compose.yml"
-```
-`scripts/prodstart.sh` generiert daraus bei jedem Lauf `/etc/sudoers.d/<DESKTOP_COMMANDER_USER>-docker` neu (validiert per `visudo -c` vor dem Installieren; bei ungültiger Syntax wird nichts installiert, alte Regel bleibt bestehen). Leer lassen = kein Docker-Zugriff (Default). Datei manuell editieren bringt nichts, sie wird bei jedem `prodstart`-Lauf überschrieben — Änderungen gehören in `config.env`.
+**Bewusster Tradeoff, kein Versehen:** Das ist **voller, praktisch root-äquivalenter Docker-Zugriff** — nicht nur lesend. Der ursprüngliche Plan war eine eng begrenzte, read-only NOPASSWD-sudoers-Regel (nur `docker ps` + `docker compose ps/logs` für die vier Projekte, kein `exec`/`restart`/`up`/`down`). Die wurde gebaut und per `visudo -c` sowie direkt per SSH erfolgreich getestet — funktioniert aber **nicht** über Desktop Commander: das Tool hat eine eigene, fest einprogrammierte `blockedCommands`-Liste (`~/.claude-server-commander/config.json` im `DESKTOP_COMMANDER_HOME`), die `sudo`, `su` und `visudo` kategorisch verbietet, unabhängig von den tatsächlichen OS-Rechten. Jeder sudo-basierte Ansatz ist für den Agenten damit grundsätzlich unbenutzbar. Nach Abwägung wurde die volle `docker`-Gruppe bewusst in Kauf genommen, um Docker-Sichtbarkeit über Desktop Commander nutzbar zu machen.
 
-Verwendung:
+Verwendung (kein `sudo` nötig):
 ```bash
-sudo docker ps
-sudo docker compose -f /home/patigon/<repo>/docker-compose.yml ps
-sudo docker compose -f /home/patigon/<repo>/docker-compose.yml logs --tail=100
+docker ps
+docker compose -f /opt/ai-workspace/<repo>/docker-compose.yml ps
+docker compose -f /opt/ai-workspace/<repo>/docker-compose.yml logs --tail=100
 ```
+Wichtig: Compose-Kommandos über den `/opt/ai-workspace/...`-Pfad ausführen, nicht über `/home/patigon/...` — letzteres scheitert an fehlendem Traversal-Recht auf `/home/patigon` selbst (siehe Architektur-Abschnitt oben), auch wenn die Docker-Gruppenrechte an sich stimmen.
