@@ -51,14 +51,18 @@ Der Symlink-Umweg über `/opt/ai-workspace` umgeht das: `chmod -R`/`chgrp -R` vo
 
 ## Aktueller Stand (verifiziert per `sudo -u patigon-remote`)
 
-| Repo | Bind-Mount | fstab | ACL rwx (Verzeichnis) | `.env`-Zugriff für den Agenten |
+| Repo | Bind-Mount | fstab | ACL rwx (Verzeichnis) | Alle `.env`-Dateien für Agent lesbar |
 |---|---|---|---|---|
-| `capential` | ✅ | ✅ | ✅ | Root `.env` offen (voller Inhalt, siehe unten) |
-| `omniperc` | ✅ | ✅ | ✅ | `backend/.env` offen (voller Inhalt) |
-| `orthonovex` | ✅ | ✅ | ✅ | Root `.env` + `backend/.env` offen |
-| `unissito` | ✅ | ✅ | ✅ | `unissito-mcp/.env` offen |
+| `capential` | ✅ | ✅ | ✅ | ✅ (Root `.env`, `frontend/.env`) |
+| `omniperc` | ✅ | ✅ | ✅ | ✅ (`backend/.env`) |
+| `orthonovex` | ✅ | ✅ | ✅ | ✅ (Root `.env`, `backend/.env`, `frontend/.env`) |
+| `unissito` | ✅ | ✅ | ✅ | ✅ (`unissito-mcp/.env`) |
 
-**Bewusste Design-Entscheidung (2026-09-25):** `.env`-Dateien werden für `patigon-remote` **nicht** mehr einzeln gesperrt. Ursprünglich waren `orthonovex/.env` und `unissito-mcp/.env` per `chmod 600`/ACL-Maske (`mask::---`) gesperrt (Mechanik siehe Punkt 2 oben — funktioniert weiterhin, falls man einzelne Dateien wieder schützen will). Das wurde bewusst aufgehoben: der Agent soll pro Repo einen eigenen GitHub-Push-Token direkt aus der echten `.env` lesen können (siehe nächster Abschnitt), und der Aufwand für eine Teil-Sperre einzelner Variablen wurde als nicht lohnend bewertet. Wer das wieder einschränken will, kann pro Datei erneut `chmod 600` setzen.
+Verifiziert per `sudo -u patigon-remote head -c1 <datei>` über den echten `/opt/ai-workspace/...`-Pfad (nicht nur `getfacl` angeschaut — ACL-Anzeige und tatsächliche Lesbarkeit über den Symlink/Bind-Mount-Pfad können auseinanderfallen, siehe Gotcha unten).
+
+**Bewusste Design-Entscheidung (2026-09-25):** `.env`-Dateien werden für `patigon-remote` **nicht** einzeln gesperrt — alle sieben oben sind offen (`mask::rw-`). Mehrere davon waren ursprünglich per `chmod 600`/ACL-Maske (`mask::---`) gesperrt (Mechanik siehe Punkt 2 oben — funktioniert weiterhin, falls man einzelne Dateien wieder schützen will); das wurde bewusst aufgehoben, weil der Agent pro Repo einen GitHub-Push-Token direkt aus der echten `.env` lesen soll (siehe nächster Abschnitt) und eine Teil-Sperre einzelner Variablen als nicht lohnend bewertet wurde. Wer das wieder einschränken will: `chmod 600` pro Datei.
+
+**Gotcha 3:** Beim erstmaligen Öffnen wurden nur `orthonovex/.env` (Root) und `omniperc/backend/.env` tatsächlich entsperrt/geprüft — `capential/.env`, `capential/frontend/.env`, `orthonovex/backend/.env`, `orthonovex/frontend/.env` und `unissito-mcp/.env` blieben unbemerkt gesperrt, bis ein Test über ChatGPT/Desktop Commander das aufdeckte. **Lektion:** Bei „alle `.env` öffnen" wirklich *jede* Datei einzeln mit `getfacl` prüfen (`grep '^mask'`), nicht nur eine pro Repo stichprobenartig — die Maske sitzt pro Datei, nicht pro Repo.
 
 **Nicht** im Workspace, kein ACL-Eintrag, für `patigon-remote` unzugänglich (`Permission denied`):
 - `/home/patigon/secret` (700, Owner-only)
