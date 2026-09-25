@@ -22,5 +22,6 @@ Codex reads this file as project guidance for `patigon-remotemanagement`.
 
 - Claude Code and Codex currently run as `root`. Desktop Commander runs as the dedicated `patigon-remote` user.
 - `WORKSPACE_DIR` defines the intended project access. Never apply recursive ownership or permission changes to a user's home, `secret`, `.ssh`, or system directories.
+- On the VPS, `WORKSPACE_DIR` (`/opt/ai-workspace`) is a curated symlink farm over bind-mounted, per-repo ACL'd directories — not a direct pointer into `/home/patigon`. See `docs/remote-workspace.md` for the current repo allowlist, the ACL/bind-mount mechanics, and the runbook for onboarding or revoking a repo.
 - Pairing must use the same service user and home as the systemd unit. A running service alone does not prove remote execution works; verify a real `hostname`, `whoami`, `pwd`, and workspace listing through ChatGPT.
 - Before deploying, inspect the VPS checkout and service status, then record the commit being deployed. Preserve a path back to the prior commit for rollback.

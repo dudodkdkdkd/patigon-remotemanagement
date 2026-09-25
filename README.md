@@ -53,6 +53,8 @@ Teste danach in ChatGPT mit Desktop Commander `hostname`, `whoami` und `pwd`. Er
 
 Desktop Commander erhält Gruppenrechte auf vorhandene Dateien im Workspace. `prodstart` setzt dazu rekursiv `ai-remote`, Schreibrechte für die Gruppe und das Setgid-Bit auf Verzeichnissen. Prüfe vor dem Start, dass `WORKSPACE_DIR` tatsächlich nur Projekte enthält, die ChatGPT bearbeiten darf. Claude und Codex laufen weiterhin als `root`; bei aktivem Desktop Commander erzeugen ihre Units Workspace-Dateien ebenfalls mit der Gruppe `ai-remote`.
 
+Auf der Produktions-VPS ist `WORKSPACE_DIR` deshalb kein direkter Projektordner, sondern ein kuratierter Symlink-Ordner über Bind-Mounts einzelner freigegebener Repos, mit `.env`-Dateien gezielt per `chmod`/ACL-Maske gesperrt. Details, aktuelle Freigabeliste und das Runbook zum Hinzufügen/Entziehen eines Repos stehen in [`docs/remote-workspace.md`](docs/remote-workspace.md).
+
 ---
 
 ## Lokale Entwicklung (Local Dev)
