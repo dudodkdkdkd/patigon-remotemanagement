@@ -1,6 +1,8 @@
 # Remote-Workspace: welche Repos ChatGPT/Desktop Commander sehen darf
 
-Dieses Dokument beschreibt den **Live-Zustand auf der VPS** (`patigon@185.196.21.153`, Hostname `vmd171243`), der regelt, welche Projekte der Desktop-Commander-Service (`desktop-commander-remote.service`, läuft als `patigon-remote`) lesen und beschreiben kann. Stand: 2026-09-25, verifiziert per SSH.
+Dieses Dokument beschreibt den **Live-Zustand auf der Produktions-VPS** (Zugangsdaten siehe privates `secret`-Repo, nicht hier), der regelt, welche Projekte der Desktop-Commander-Service (`desktop-commander-remote.service`, läuft als `patigon-remote`) lesen und beschreiben kann. Stand: 2026-09-25, verifiziert per SSH.
+
+> **Hinweis:** Dieses Repo (`patigon-remotemanagement`) ist öffentlich. Keine IPs, Hostnames, Tokens oder sonstigen konkreten Zugangsdaten hier eintragen — nur Mechanik/Architektur dokumentieren.
 
 Ziel des Designs: **ausgewählte Projekt-Repos voll les-/schreibbar für ChatGPT, aber ohne Secrets** (`.env`, `config.env`, `secret/`, persönlicher `patigon`-Ordner).
 
@@ -49,17 +51,23 @@ Der Symlink-Umweg über `/opt/ai-workspace` umgeht das: `chmod -R`/`chgrp -R` vo
 
 ## Aktueller Stand (verifiziert per `sudo -u patigon-remote`)
 
-| Repo | Bind-Mount | fstab | ACL rwx (Verzeichnis) | `.env` gesperrt |
+| Repo | Bind-Mount | fstab | ACL rwx (Verzeichnis) | `.env`-Zugriff für den Agenten |
 |---|---|---|---|---|
-| `capential` | ✅ | ✅ | ✅ | — (kein `.env` mit Secrets vorhanden geprüft) |
-| `omniperc` | ✅ | ✅ | ✅ | — |
-| `orthonovex` | ✅ | ✅ | ✅ | ✅ (`.env` → `Permission denied` für `patigon-remote`) |
-| `unissito` | ✅ | ✅ | ✅ | — |
+| `capential` | ✅ | ✅ | ✅ | Root `.env` offen (voller Inhalt, siehe unten) |
+| `omniperc` | ✅ | ✅ | ✅ | `backend/.env` offen (voller Inhalt) |
+| `orthonovex` | ✅ | ✅ | ✅ | Root `.env` + `backend/.env` offen |
+| `unissito` | ✅ | ✅ | ✅ | `unissito-mcp/.env` offen |
+
+**Bewusste Design-Entscheidung (2026-09-25):** `.env`-Dateien werden für `patigon-remote` **nicht** mehr einzeln gesperrt. Ursprünglich waren `orthonovex/.env` und `unissito-mcp/.env` per `chmod 600`/ACL-Maske (`mask::---`) gesperrt (Mechanik siehe Punkt 2 oben — funktioniert weiterhin, falls man einzelne Dateien wieder schützen will). Das wurde bewusst aufgehoben: der Agent soll pro Repo einen eigenen GitHub-Push-Token direkt aus der echten `.env` lesen können (siehe nächster Abschnitt), und der Aufwand für eine Teil-Sperre einzelner Variablen wurde als nicht lohnend bewertet. Wer das wieder einschränken will, kann pro Datei erneut `chmod 600` setzen.
 
 **Nicht** im Workspace, kein ACL-Eintrag, für `patigon-remote` unzugänglich (`Permission denied`):
 - `/home/patigon/secret` (700, Owner-only)
 - `/home/patigon/patigon` (persönlicher Ordner)
 - alle anderen Projektverzeichnisse unter `/home/patigon` (z. B. weitere `patigon-*`-Checkouts), die nicht explizit onboarded wurden
+
+**Gotcha, live erlebt:** Nicht jedes Repo hat seine echte Config im Root. Vor dem Anlegen/Ändern einer `.env` immer erst prüfen, wo die *tatsächlich gelesene* Datei liegt (`.env.example` daneben ist ein guter Hinweis) — sonst legt man eine wirkungslose Datei an der falschen Stelle an. Live falsch geraten: `omniperc` (echte Config liegt in `backend/.env`, nicht im Root) und `unissito` (echte Config liegt in `unissito-mcp/.env`, es gibt gar kein Root-`.env`).
+
+**Gotcha 2:** Vor jedem Kopieren einer `secret/`-Vorlage über eine *bestehende* Live-`.env` erst per Key-Namen diffen (`grep -oE '^[A-Z_]+=' datei | sort`). Bei `capential` enthielt die Secret-Vorlage ~50 zusätzliche Keys gegenüber der Live-Datei, darunter Trading/Broker-Flags — ein blindes Überschreiben hätte Produktionsverhalten ändern können. Nur nach expliziter Bestätigung überschrieben, vorher Backup nach `/home/patigon/backups/` gezogen.
 
 ## Runbook: neues Repo freigeben
 
@@ -90,16 +98,40 @@ Der Symlink-Umweg über `/opt/ai-workspace` umgeht das: `chmod -R`/`chgrp -R` vo
 
 Ein Repo wieder entziehen: Symlink in `/opt/ai-workspace` löschen reicht für Desktop Commander (WORKSPACE_DIR-Sicht), lässt aber Mount + ACL bestehen — für vollständigen Rückbau zusätzlich `umount`, fstab-Zeile entfernen, `setfacl -R -b` auf dem Repo.
 
-## Offen / noch nicht umgesetzt: pro Repo eigener GitHub-Key
+## Pro-Repo GitHub-Zugang: Fine-grained PAT pro Repo, in der echten `.env`
 
-**Anforderung (noch nicht implementiert, Stand 2026-09-25):** Jedes ans Remote-Team freigegebene Repo soll einen **eigenen, auf genau dieses Repo beschränkten GitHub-Token mit Read/Write** in seiner eigenen `.env`/`config.env` bekommen — geprüft, aktuell hat **keines** der vier Repos (`capential`, `omniperc`, `orthonovex`, `unissito`) eine `GITHUB_*`/`GH_*`-Variable in `.env` oder `.env.example`.
+**Anforderung:** Jedes ans Remote-Team freigegebene Repo soll einen **eigenen, auf genau dieses Repo beschränkten GitHub-Zugang mit Read/Write** haben — verhindert, dass ein Agent, der in Repo A arbeitet, mit demselben Credential auch in Repo B pushen/PRs öffnen kann.
 
-Grund: verhindert, dass ein Agent, der in Repo A arbeitet, mit demselben Token auch in Repo B pushen/PRs öffnen kann — Blast Radius pro Repo statt ein globaler Schlüssel für alles.
+**Status (Stand 2026-09-25): umgesetzt und end-to-end verifiziert.**
 
-**Empfehlung für Umsetzung (noch zu entscheiden/auszuführen):**
-1. Pro Repo ein **fine-grained GitHub Personal Access Token** erstellen, Scope: nur dieses eine Repository, Contents (read/write) + Pull requests (read/write).
-2. Key-Name-Konvention festlegen (z. B. `GITHUB_TOKEN` in jedem Repo) und in jedem `.env.example` dokumentieren.
-3. In die jeweilige `.env` eintragen — **nicht committen**, jede `.env` bleibt gitignored.
-4. Diese Datei (oder die betroffene `.env`) nach Erstellung ebenfalls per `chmod 600` sperren (Schritt 4 im Runbook oben), damit sie über die ACL-Ausnahme genauso geschützt ist wie andere Secrets.
+### Verworfene Alternative: SSH-Deploy-Key pro Repo
 
-Da das Erstellen von GitHub-Tokens eine manuelle Aktion im GitHub-UI (oder `gh auth`) mit explizitem Scope-Entscheid ist, ist das hier bewusst nicht automatisiert worden.
+Erste Idee war ein SSH-Deploy-Key pro Repo (GitHub Deploy Keys sind von Natur aus auf ein Repo beschränkt). Dafür existierten bereits vier Keys `chatgpt-<repo>-<hostname>` (read/write) auf GitHub plus passende private Keys in `secret/deploy-keys/chatgpt/`. Verworfen, weil: `patigon-remote` hat kein Home-Verzeichnis und damit keine `~/.ssh/config` — SSH-Host-Aliase (`Host github-<repo>`) sind aber per-User-Konfiguration in `~/.ssh/config`, nicht am Repo hängend. Das hätte einen eigenen Home-Ordner + `.ssh/config`-Aufbau für den Service-Account gebraucht. **Diese Deploy-Keys wurden inzwischen von GitHub entfernt und die privaten Key-Dateien aus `secret/` gelöscht** — nicht mehr verwenden, falls sie irgendwo in altem Kontext auftauchen.
+
+### Gewählter Mechanismus: fine-grained PAT + HTTPS
+
+Statt SSH: pro Repo ein **fine-grained GitHub Personal Access Token**, gespeichert als `AGENT_GITHUB_TOKEN=` direkt in der **echten, vom jeweiligen Service tatsächlich gelesenen `.env`-Datei** (nicht in einer separaten Datei — siehe "bewusste Design-Entscheidung" oben, warum `.env`-Sperren dafür aufgehoben wurden).
+
+- **Token-Setup pro Repo:** GitHub → Settings → Developer settings → Fine-grained tokens → Only select repositories (genau 1 Repo) → Permissions: **Contents: Read and write**, **Pull requests: Read and write**. Kein Ablaufdatum (Service-Credential, keine manuelle Rotation vorgesehen) — GitHub warnt davor, hier bewusst in Kauf genommen.
+- **Namenskonvention:** `<repo>-read-write-vps` (z. B. `orthonovex-read-write-vps`), damit auf einen Blick klar ist, wofür der Token ist.
+- **Variablenname:** `AGENT_GITHUB_TOKEN` — **nicht** `GITHUB_TOKEN`, weil dieser Name in mindestens einem Repo (`unissito`) schon für ein anderes Feature (Source-Ingestion der MCP-App) belegt war. Vor dem Eintragen in ein neues Repo immer erst prüfen, ob `GITHUB_TOKEN`/`AGENT_GITHUB_TOKEN` dort schon zweckentfremdet ist.
+- **Backup der Vorlagen:** Werte liegen zusätzlich in `secret/env.<repo>.<component>` (bzw. `secret/env.unissito`), damit sie bei einem VPS-Rebuild nicht verloren gehen. `secret`-Repo ist **privat** — dort dürfen echte Token-Werte stehen (im Gegensatz zu `patigon-remotemanagement`, siehe Hinweis oben).
+
+**Echte Speicherorte** (verifiziert, nicht das Root-Schema blind angenommen):
+
+| Repo | Datei mit `AGENT_GITHUB_TOKEN` |
+|---|---|
+| `capential` | `capential/.env` (Root) |
+| `omniperc` | `omniperc/backend/.env` |
+| `orthonovex` | `orthonovex/.env` (Root) + `orthonovex/backend/.env` |
+| `unissito` | `unissito/unissito-mcp/.env` |
+
+**Verwendung durch den Agenten (Push, ohne `origin` anzufassen):**
+```bash
+cd /opt/ai-workspace/<repo>
+TOKEN=$(grep -oP '(?<=^AGENT_GITHUB_TOKEN=).*' <pfad-zur-echten-.env>)
+git push "https://x-access-token:${TOKEN}@github.com/dudodkdkdkd/<github-repo-name>.git" <branch>:<branch>
+```
+Der bestehende `origin`-Remote (SSH, genutzt von `patigon` selbst und vom Deploy-Workflow) bleibt dabei komplett unangetastet — kein Risiko für die bestehende CI/Deploy-Pipeline.
+
+**End-to-End getestet (2026-09-25):** Als `patigon-remote` echten Branch auf `patigon-orthonovex` gepusht (siehe Befehl oben), auf GitHub verifiziert, danach Branch lokal und remote wieder gelöscht. Funktioniert.
